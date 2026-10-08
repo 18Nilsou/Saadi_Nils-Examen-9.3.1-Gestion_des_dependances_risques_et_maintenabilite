@@ -1,0 +1,122 @@
+import pytest
+from fakes import FakeClock
+
+from reveil_musical.application.music_chain import MusicFallbackChain
+from reveil_musical.domain.errors import ProviderUnavailable
+from reveil_musical.domain.models import Track
+from reveil_musical.infrastructure.music.guards import CachingMusicProvider, RateLimitedMusicProvider
+from reveil_musical.infrastructure.music.local import DEFAULT_TRACKS, LocalFallbackMusicProvider
+
+TRACK = Track("Clouds", "Zara Larsson", "fake")
+
+
+class CountingProvider:
+    def __init__(self, result=TRACK, error=None):
+        self.result, self.error, self.calls = result, error, 0
+
+    def find_track(self, query):
+        self.calls += 1
+        if self.error:
+            raise ProviderUnavailable(self.error)
+        return self.result
+
+
+# --- Rate limit (iTunes ~20 req/min) ---
+
+def test_rate_limit_refuses_the_21st_call_without_calling_the_provider():
+    inner, clock = CountingProvider(), FakeClock()
+    limited = RateLimitedMusicProvider(inner, clock, max_calls=20, window_seconds=60)
+    for _ in range(20):
+        limited.find_track("q")
+
+    with pytest.raises(ProviderUnavailable):
+        limited.find_track("q")
+    assert inner.calls == 20
+
+
+def test_rate_limit_window_slides_with_the_clock():
+    inner, clock = CountingProvider(), FakeClock()
+    limited = RateLimitedMusicProvider(inner, clock, max_calls=1, window_seconds=60)
+    limited.find_track("q")
+    clock.advance(60.1)
+
+    assert limited.find_track("q") == TRACK
+
+
+# --- Cache ---
+
+def test_cache_hit_does_not_call_the_provider_again():
+    inner, clock = CountingProvider(), FakeClock()
+    cached = CachingMusicProvider(inner, clock, ttl_seconds=3600)
+
+    assert cached.find_track("Clouds") == cached.find_track("clouds ") == TRACK
+    assert inner.calls == 1
+
+
+def test_cache_entries_expire():
+    inner, clock = CountingProvider(), FakeClock()
+    cached = CachingMusicProvider(inner, clock, ttl_seconds=10)
+    cached.find_track("q")
+    clock.advance(11)
+    cached.find_track("q")
+
+    assert inner.calls == 2
+
+
+def test_failures_are_not_cached():
+    inner, clock = CountingProvider(error="500"), FakeClock()
+    cached = CachingMusicProvider(inner, clock, ttl_seconds=10)
+    for _ in range(2):
+        with pytest.raises(ProviderUnavailable):
+            cached.find_track("q")
+
+    assert inner.calls == 2
+
+
+def test_cache_in_front_of_rate_limit_spares_the_quota():
+    inner, clock = CountingProvider(), FakeClock()
+    guarded = CachingMusicProvider(RateLimitedMusicProvider(inner, clock, 1, 60), clock, 3600)
+
+    for _ in range(5):
+        assert guarded.find_track("same") == TRACK
+    assert inner.calls == 1
+
+
+# --- Fallback local ---
+
+def test_local_fallback_matches_title_when_known():
+    track = LocalFallbackMusicProvider(DEFAULT_TRACKS).find_track(DEFAULT_TRACKS[1].title.upper())
+    assert track == DEFAULT_TRACKS[1]
+
+
+def test_local_fallback_always_returns_a_track():
+    assert LocalFallbackMusicProvider(DEFAULT_TRACKS).find_track("totalement inconnu") == DEFAULT_TRACKS[0]
+
+
+# --- Chaîne de repli iTunes -> MusicBrainz -> local ---
+
+def test_chain_uses_the_first_provider_when_healthy():
+    first, second = CountingProvider(), CountingProvider()
+
+    assert MusicFallbackChain([first, second]).resolve("q") == (TRACK, False)
+    assert second.calls == 0
+
+
+@pytest.mark.parametrize("failing", [CountingProvider(error="HTTP 500"), CountingProvider(error="timeout"), CountingProvider(result=None)])
+def test_chain_falls_back_on_error_or_empty_result(failing):
+    backup = Track("Backup", "B", "musicbrainz")
+
+    assert MusicFallbackChain([failing, CountingProvider(result=backup)]).resolve("q") == (backup, True)
+
+
+def test_chain_ends_on_local_list_when_every_remote_is_down():
+    chain = MusicFallbackChain(
+        [CountingProvider(error="500"), CountingProvider(error="timeout"), LocalFallbackMusicProvider(DEFAULT_TRACKS)]
+    )
+
+    assert chain.resolve("q") == (DEFAULT_TRACKS[0], True)
+
+
+def test_chain_with_nothing_left_raises():
+    with pytest.raises(ProviderUnavailable):
+        MusicFallbackChain([CountingProvider(error="500")]).resolve("q")

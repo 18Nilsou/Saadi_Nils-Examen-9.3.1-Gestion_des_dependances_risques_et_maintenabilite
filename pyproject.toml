@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reveil-musical"
+version = "0.1.0"
+description = "Réveil musical : un morceau selon le jour et la météo, envoyé sur le canal préféré."
+requires-python = ">=3.13"
+dependencies = [
+    "dependency-injector==4.49.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "pytest-cov==7.1.0",
+    "pip-audit==2.10.1",
+    "pip-licenses==5.5.5",
+    "pipdeptree==4.2.5",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["tests"]
+addopts = "--cov=reveil_musical --cov-report=term-missing --cov-fail-under=90"
