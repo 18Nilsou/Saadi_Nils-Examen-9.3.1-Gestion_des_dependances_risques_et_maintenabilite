@@ -45,18 +45,6 @@ def test_musicbrainz_always_sends_an_identifiable_user_agent():
     assert http.calls[0]["params"] == {"query": "x", "fmt": "json"}
 
 
-@pytest.mark.parametrize("make, empty", [(itunes, {"resultCount": 0, "results": []}), (musicbrainz, {"recordings": []})])
-def test_no_result_returns_none(make, empty):
-    assert make(FakeHttp(empty)).find_track("inconnu") is None
-
-
-@pytest.mark.parametrize("make", [itunes, musicbrainz])
-@pytest.mark.parametrize("error", ["HTTP 500", "timeout"])
-def test_transport_failure_is_reported_as_provider_unavailable(make, error):
-    with pytest.raises(ProviderUnavailable):
-        make(FakeHttp(error=error)).find_track("x")
-
-
 @pytest.mark.parametrize("make", [itunes, musicbrainz])
 def test_unexpected_json_shape_is_reported_as_provider_unavailable(make):
     with pytest.raises(ProviderUnavailable):

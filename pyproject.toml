@@ -26,4 +26,5 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["tests"]
-addopts = "--cov=reveil_musical --cov-report=term-missing --cov-fail-under=90"
+addopts = "-m 'not e2e' --cov=reveil_musical --cov-report=term-missing --cov-fail-under=90"
+markers = ["e2e: appelle les vraies API iTunes/MusicBrainz (réseau requis) ; pytest -m e2e --no-cov"]

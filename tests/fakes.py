@@ -35,3 +35,19 @@ class FakeClock:
 
     def advance(self, seconds: float) -> None:
         self.t += seconds
+
+
+class SdkSpy:
+    """Faux SDK de notification : enregistre l'appel reçu, quelle que soit la signature
+    (send_mail / dispatch / notify), et peut simuler une erreur propre au SDK."""
+
+    def __init__(self, error: Exception | None = None):
+        self.calls = []
+        self.error = error
+
+    def _record(self, *args):
+        self.calls.append(args)
+        if self.error:
+            raise self.error
+
+    send_mail = dispatch = notify = _record

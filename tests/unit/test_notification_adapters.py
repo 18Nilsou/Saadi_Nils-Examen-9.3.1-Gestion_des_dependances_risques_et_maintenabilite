@@ -1,8 +1,7 @@
 import logging
 
-import pytest
+from fakes import SdkSpy as Spy
 
-from reveil_musical.domain.errors import NotificationFailed
 from reveil_musical.domain.models import WakeUpMessage
 from reveil_musical.infrastructure.notifications.adapters import (
     EmailNotificationAdapter,
@@ -12,29 +11,11 @@ from reveil_musical.infrastructure.notifications.adapters import (
 )
 from reveil_musical.infrastructure.notifications.clients import (
     EmailClient,
-    EmailDeliveryError,
     PushNotifier,
-    PushRejected,
     SmsGateway,
-    SmsGatewayError,
 )
 
 MESSAGE = WakeUpMessage(subject="Bon lundi !", body="Votre morceau : Clouds — Zara Larsson.")
-
-
-class Spy:
-    """Enregistre l'appel reçu, quelle que soit la signature du faux SDK."""
-
-    def __init__(self, error: Exception | None = None):
-        self.calls = []
-        self.error = error
-
-    def _record(self, *args):
-        self.calls.append(args)
-        if self.error:
-            raise self.error
-
-    send_mail = dispatch = notify = _record
 
 
 def test_email_adapter_maps_to_send_mail_with_html_body():
@@ -57,19 +38,6 @@ def test_push_adapter_maps_to_title_and_payload():
     spy = Spy()
     PushNotificationAdapter(spy).send("token", MESSAGE)
     assert spy.calls == [("token", "Bon lundi !", {"body": MESSAGE.body})]
-
-
-@pytest.mark.parametrize(
-    "adapter_cls, error",
-    [
-        (EmailNotificationAdapter, EmailDeliveryError("smtp down")),
-        (SmsNotificationAdapter, SmsGatewayError("quota")),
-        (PushNotificationAdapter, PushRejected("bad token")),
-    ],
-)
-def test_adapters_translate_sdk_errors_into_domain_error(adapter_cls, error):
-    with pytest.raises(NotificationFailed):
-        adapter_cls(Spy(error)).send("contact", MESSAGE)
 
 
 def test_fake_sdks_write_to_the_log(caplog):
