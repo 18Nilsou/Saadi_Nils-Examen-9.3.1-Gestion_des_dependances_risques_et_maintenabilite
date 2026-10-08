@@ -4,7 +4,28 @@ import argparse
 import logging
 
 from .container import Container, create_container
+from .domain.errors import UnknownUser
 from .domain.models import DayOfWeek, Weather
+
+_log = logging.getLogger("reveil_musical")
+
+
+def _wake(container: Container, user_id: str, day: DayOfWeek, weather: Weather) -> int:
+    """Un réveil. Codes de sortie : 0 envoyé, 2 utilisateur inconnu, 1 panne non rattrapable
+    (ex. service utilisateurs injoignable) : tracée en CRITICAL pour que l'ordonnanceur alerte."""
+    try:
+        result = container.wake_up_use_case().execute(user_id, day, weather)
+    except UnknownUser:
+        _log.error("utilisateur inconnu : %s", user_id)
+        return 2
+    except Exception:
+        _log.critical("RÉVEIL NON LIVRÉ pour %s (%s, %s)", user_id, day, weather, exc_info=True)
+        return 1
+    print(
+        f"Réveil envoyé via {result.channel} : {result.track.title} — {result.track.artist} "
+        f"(source={result.track.source}, dégradé={result.degraded})"
+    )
+    return 0
 
 
 def main(argv: list[str] | None = None, container: Container | None = None) -> int:
@@ -15,13 +36,7 @@ def main(argv: list[str] | None = None, container: Container | None = None) -> i
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    container = container or create_container()
-    result = container.wake_up_use_case().execute(args.user_id, args.day, args.weather)
-    print(
-        f"Réveil envoyé via {result.channel} : {result.track.title} — {result.track.artist} "
-        f"(source={result.track.source}, dégradé={result.degraded})"
-    )
-    return 0
+    return _wake(container or create_container(), args.user_id, args.day, args.weather)
 
 
 if __name__ == "__main__":

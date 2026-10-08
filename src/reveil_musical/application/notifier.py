@@ -10,7 +10,8 @@ _log = logging.getLogger(__name__)
 
 class NotificationDispatcher:
     """Strategy : choisit le sender selon le canal préféré, puis se replie sur les autres
-    canaux connus de l'utilisateur, puis sur le dernier recours."""
+    canaux connus de l'utilisateur, puis sur le dernier recours. Point unique par où passent
+    tous les canaux : c'est ici qu'on garantit qu'aucune panne de canal n'empêche le réveil."""
 
     def __init__(self, senders: Mapping[Channel, NotificationSender], last_resort: NotificationSender):
         self._senders = senders
@@ -25,7 +26,7 @@ class NotificationDispatcher:
             try:
                 sender.send(profile.contacts[channel], message)
                 return channel, channel != profile.preferred_channel
-            except NotificationFailed as e:
-                _log.warning("canal %s en échec : %s", channel, e)
+            except Exception as e:  # tout canal peut tomber, d'une façon que son adapter n'a pas prévue
+                _log.warning("canal %s en échec : %s", channel, e, exc_info=not isinstance(e, NotificationFailed))
         self._last_resort.send(profile.user_id, message)
         return Channel.LOG, True

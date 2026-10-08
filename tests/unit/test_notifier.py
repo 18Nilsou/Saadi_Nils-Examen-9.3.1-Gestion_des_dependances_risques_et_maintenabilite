@@ -45,6 +45,22 @@ def test_falls_back_to_another_channel_of_the_user():
     assert email.sent == [("a@x", MESSAGE)]
 
 
+def test_unexpected_sdk_exception_does_not_stop_the_wake_up(caplog):
+    class Crashing:
+        def send(self, contact, message):
+            raise ConnectionError("gateway reset")
+
+    email = FakeSender()
+    dispatcher = NotificationDispatcher({Channel.SMS: Crashing(), Channel.EMAIL: email}, FakeSender())
+
+    channel, degraded = dispatcher.dispatch(
+        profile(Channel.SMS, {Channel.SMS: "+33", Channel.EMAIL: "a@x"}), MESSAGE
+    )
+
+    assert (channel, degraded) == (Channel.EMAIL, True)
+    assert "gateway reset" in caplog.text
+
+
 def test_channel_without_registered_sender_is_skipped():
     log = FakeSender()
     dispatcher = NotificationDispatcher({}, log)

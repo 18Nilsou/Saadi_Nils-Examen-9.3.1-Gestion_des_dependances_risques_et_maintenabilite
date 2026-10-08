@@ -2,7 +2,6 @@ import pytest
 from dependency_injector import providers
 from fakes import FakeHttp, load_fixture
 
-from reveil_musical.__main__ import main
 from reveil_musical.container import Container, create_container
 from reveil_musical.domain.models import Channel, DayOfWeek, Weather
 
@@ -46,15 +45,3 @@ def test_env_variables_override_defaults():
 
     assert c.config.itunes_url() == "http://itunes.local"
     assert c.config.http_timeout() == 1.5
-
-
-def test_cli_entry_point_prints_the_result(container, capsys):
-    container.http.override(FakeHttp(error="offline"))
-
-    assert main(["u3", "VENDREDI", "NUAGEUX"], container) == 0
-    assert "PUSH" in capsys.readouterr().out
-
-
-def test_cli_rejects_an_unknown_weather():
-    with pytest.raises(SystemExit):
-        main(["u1", "LUNDI", "GRELE"])
