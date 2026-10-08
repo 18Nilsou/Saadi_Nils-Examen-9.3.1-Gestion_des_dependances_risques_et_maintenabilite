@@ -1,7 +1,7 @@
 #!/bin/sh
 # Contrôle exigé par la direction : aucun composant externe sans vérification de sa licence
 # et de sa fraîcheur. À lancer avant tout ajout/mise à jour de dépendance (et en CI).
-#   bloquant   : licence copyleft forte, vulnérabilité connue
+#   bloquant   : licence hors liste blanche ou interdite, vulnérabilité connue
 #   informatif : paquets en retard sur leur dernière version stable
 #   produit    : sbom.cdx.json (CycloneDX) des seules dépendances livrées avec le produit
 set -eu
@@ -12,14 +12,23 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
 echo "== 1/4 Licences de tout l'environnement (directes + transitives, runtime + dev)"
-# Liste BLANCHE : une licence absente, UNKNOWN ou nouvelle bloque jusqu'à vérification humaine.
-# La liste noire reste en garde-fou : « GPL » (--partial-match) couvre aussi AGPL et LGPL, même
-# glissé dans une expression « X OR GPL ». MPL-2.0 (copyleft faible, par fichier) est toléré.
 # Notre propre paquet (LicenseRef-Proprietary) est exclu : pip-licenses le lit comme UNKNOWN.
-"$VENV/pip-licenses" --with-system --partial-match --ignore-packages reveil-musical \
-  --allow-only "MIT;BSD;Apache;Python Software Foundation;PSF-2.0;Mozilla Public License 2.0" \
-  --fail-on "GPL;SSPL;EUPL" > /dev/null
+# a) Liste BLANCHE, en correspondance EXACTE : une licence absente, UNKNOWN ou jamais vue bloque
+#    jusqu'à vérification humaine, qui l'ajoute ici. Jamais --partial-match pour la liste blanche :
+#    « MIT » y est cherché comme sous-chaîne et accepte « Limited Use », « submit », « Permits »…
+#    MPL-2.0 (copyleft faible, par fichier, outillage de dev uniquement) est tolérée.
+ALLOWED="MIT;MIT License;Apache-2.0;Apache Software License;Apache-2.0 OR BSD-2-Clause"
+ALLOWED="$ALLOWED;BSD-2-Clause;BSD-3-Clause;BSD License;PSF-2.0;Python Software Foundation License"
+ALLOWED="$ALLOWED;Mozilla Public License 2.0 (MPL 2.0)"
+"$VENV/pip-licenses" --with-system --ignore-packages reveil-musical --allow-only "$ALLOWED" > /dev/null
+# b) Liste NOIRE, en sous-chaîne : rattrape un paquet qui déclare à la fois une licence admise et
+#    une licence interdite (la liste blanche se contente d'une seule admise). « GPL » couvre AGPL et
+#    LGPL, même dans « X OR GPL » ; s'y ajoutent les licences « source disponible » non commerciales.
+DENIED="GPL;SSPL;EUPL;Commons Clause;Commons-Clause;Proprietary;Non-Commercial;NonCommercial"
+DENIED="$DENIED;BUSL;Business Source;Elastic License"
+"$VENV/pip-licenses" --with-system --ignore-packages reveil-musical --partial-match --fail-on "$DENIED" > /dev/null
 echo "OK : uniquement des licences permissives (ou MPL-2.0 justifiée)"
+[ "${1:-}" = "--licences-only" ] && exit 0  # utilisé par scripts/audit_selftest.sh
 
 echo "== 2/4 Vulnérabilités connues (versions exactes du fichier de verrouillage)"
 "$VENV/pip-audit" --strict --no-deps --disable-pip -r requirements-dev.lock
