@@ -5,7 +5,7 @@ import pytest
 from fakes import FakeClock
 
 from reveil_musical.application.music_chain import MusicFallbackChain
-from reveil_musical.domain.errors import ProviderUnavailable, QuotaExceeded
+from reveil_musical.domain.errors import ProviderUnavailable, QueryRejected, QuotaExceeded
 from reveil_musical.domain.models import Track
 from reveil_musical.infrastructure.music.guards import (
     CachingMusicProvider,
@@ -221,6 +221,25 @@ def test_quota_rejections_never_open_the_circuit_of_a_healthy_provider():
 
     assert cb.find_track("c") == TRACK
     assert inner.calls == 2
+
+
+def test_rejected_queries_never_open_the_circuit_of_a_healthy_provider():
+    """Régression : 3 titres refusés en HTTP 4xx coupaient 60 s la source pour tout le monde."""
+    class PickyProvider(CountingProvider):
+        def find_track(self, query):
+            self.calls += 1
+            if "!" in query:
+                raise QueryRejected("HTTP 400")
+            return self.result
+
+    inner, clock = PickyProvider(), FakeClock()
+    cb = breaker(inner, clock)
+    for query in ("Help!", "Hey Ya!", "Shout!", "Wham!"):
+        with pytest.raises(QueryRejected):
+            cb.find_track(query)
+
+    assert cb.find_track("Here Comes the Sun") == TRACK
+    assert inner.calls == 5
 
 # --- Concurrence : plusieurs réveils au même instant ---
 

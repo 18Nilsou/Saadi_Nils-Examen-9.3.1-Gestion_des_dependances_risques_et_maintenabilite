@@ -5,7 +5,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-from reveil_musical.domain.errors import ProviderUnavailable
+from reveil_musical.domain.errors import ProviderUnavailable, QueryRejected
 from reveil_musical.infrastructure.http import JsonHttpClient
 
 
@@ -17,6 +17,9 @@ class Handler(BaseHTTPRequestHandler):
             "/ok": (200, b'{"ua": "%s"}' % self.headers["User-Agent"].encode()),
             "/boom": (500, b"error"),
             "/notjson": (200, b"<html>"),
+            "/bad": (400, b"bad query"),
+            "/throttled": (403, b"forbidden"),
+            "/toomany": (429, b"slow down"),
         }.get(self.path.split("?")[0], (200, b"{}"))
         self.send_response(status)
         self.end_headers()
@@ -48,3 +51,15 @@ def test_errors_and_timeouts_become_provider_unavailable(base_url, path):
 def test_unreachable_host_becomes_provider_unavailable():
     with pytest.raises(ProviderUnavailable):
         JsonHttpClient(timeout=0.5).get_json("http://127.0.0.1:9/nothing")
+
+
+def test_a_4xx_rejects_the_query_not_the_provider(base_url):
+    with pytest.raises(QueryRejected):
+        JsonHttpClient(timeout=2).get_json(f"{base_url}/bad")
+
+
+@pytest.mark.parametrize("path", ["/throttled", "/toomany", "/boom"])
+def test_throttling_and_5xx_remain_outages(base_url, path):
+    with pytest.raises(ProviderUnavailable) as raised:
+        JsonHttpClient(timeout=2).get_json(f"{base_url}{path}")
+    assert not isinstance(raised.value, QueryRejected)

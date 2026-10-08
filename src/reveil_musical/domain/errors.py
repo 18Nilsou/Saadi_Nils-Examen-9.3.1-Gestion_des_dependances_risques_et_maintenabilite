@@ -12,3 +12,7 @@ class UnknownUser(Exception):
 
 class QuotaExceeded(ProviderUnavailable):
     """Refus de notre propre limiteur de débit : le fournisseur, lui, n'est pas en panne."""
+
+
+class QueryRejected(ProviderUnavailable):
+    """Le fournisseur refuse CETTE requête (HTTP 4xx) : lui n'est pas en panne."""
