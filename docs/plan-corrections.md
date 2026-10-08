@@ -2,6 +2,7 @@
 
 **Objectif** : combler les 16 écarts relevés par la revue (sujet du TP + supports J1/J2) sans casser l'architecture existante.
 **Méthode** : TDD (test rouge → code minimal → vert), un commit par tâche, suite complète verte et couverture ≥ 90 % à chaque commit.
+**Statut** : ✅ toutes les tâches réalisées, un commit par tâche (`git log`) ; suite par défaut, e2e et `scripts/audit.sh` verts.
 **Contraintes globales** : Python 3.13 ; **aucune nouvelle dépendance runtime** (stdlib uniquement) ; domaine sans import technique ; aucune classe concrète instanciée hors de `container.py`.
 
 | # revue | Tâche |
