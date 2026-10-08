@@ -17,6 +17,6 @@ class WakeUpUseCase:
 
     def execute(self, user_id: str, day: DayOfWeek, weather: Weather) -> WakeUpResult:
         profile = self._users.get(user_id)
-        track, music_degraded = self._music.resolve(select_track_query(profile, weather))
+        track, music_degraded = self._music.resolve(select_track_query(profile, day, weather))
         channel, channel_degraded = self._notifier.dispatch(profile, build_message(track, day, weather))
         return WakeUpResult(track=track, channel=channel, degraded=music_degraded or channel_degraded)

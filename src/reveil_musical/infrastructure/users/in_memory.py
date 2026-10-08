@@ -2,7 +2,7 @@
 from collections.abc import Iterable
 
 from reveil_musical.domain.errors import UnknownUser
-from reveil_musical.domain.models import Channel, UserProfile, Weather
+from reveil_musical.domain.models import Channel, DayOfWeek, UserProfile, Weather
 
 DEMO_PROFILES = (
     UserProfile(
@@ -16,6 +16,7 @@ DEMO_PROFILES = (
         backup_track="Wake Me Up",
         preferred_channel=Channel.EMAIL,
         contacts={Channel.EMAIL: "alice@example.com", Channel.SMS: "+33600000001"},
+        tracks_by_day={(DayOfWeek.SAMEDI, Weather.SOLEIL): "Saturday in the Park"},
     ),
     UserProfile(
         user_id="u2",

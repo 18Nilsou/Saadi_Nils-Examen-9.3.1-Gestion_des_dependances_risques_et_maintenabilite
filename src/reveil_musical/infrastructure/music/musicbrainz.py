@@ -21,5 +21,5 @@ class MusicBrainzMusicProvider:
                 return None
             first = recordings[0]
             return Track(title=first["title"], artist=first["artist-credit"][0]["name"], source="musicbrainz")
-        except (KeyError, TypeError, IndexError) as e:
+        except (KeyError, TypeError, IndexError, ValueError) as e:
             raise ProviderUnavailable(f"musicbrainz: réponse inattendue ({e!r})") from e

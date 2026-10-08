@@ -9,8 +9,11 @@ _WEATHER_LABELS = {
 }
 
 
-def select_track_query(profile: UserProfile, weather: Weather) -> str:
-    return profile.tracks_by_weather.get(weather, profile.backup_track)
+def select_track_query(profile: UserProfile, day: DayOfWeek, weather: Weather) -> str:
+    """(jour, météo) si l'utilisateur l'a prévu, sinon météo, sinon morceau de secours."""
+    return profile.tracks_by_day.get(
+        (day, weather), profile.tracks_by_weather.get(weather, profile.backup_track)
+    )
 
 
 def build_message(track: Track, day: DayOfWeek, weather: Weather) -> WakeUpMessage:

@@ -20,3 +20,4 @@ def test_demo_data_covers_each_channel_and_an_uncovered_weather():
     channels = {p.preferred_channel for p in DEMO_PROFILES}
     assert channels == {Channel.EMAIL, Channel.SMS, Channel.PUSH}
     assert any(len(p.tracks_by_weather) < len(Weather) for p in DEMO_PROFILES)
+    assert any(p.tracks_by_day for p in DEMO_PROFILES)

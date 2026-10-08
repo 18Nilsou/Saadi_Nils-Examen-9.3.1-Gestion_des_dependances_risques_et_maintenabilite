@@ -63,6 +63,18 @@ def test_unexpected_json_shape_is_reported_as_provider_unavailable(make):
         make(FakeHttp({"results": [{"oops": 1}], "recordings": [{"oops": 1}]})).find_track("x")
 
 
+@pytest.mark.parametrize(
+    "make, payload",
+    [
+        (itunes, {"results": [{"trackName": None, "artistName": "A"}]}),
+        (musicbrainz, {"recordings": [{"title": "", "artist-credit": [{"name": "A"}]}]}),
+    ],
+)
+def test_meaningless_fields_are_reported_as_provider_unavailable(make, payload):
+    with pytest.raises(ProviderUnavailable):
+        make(FakeHttp(payload)).find_track("x")
+
+
 def test_no_provider_specific_field_leaks_into_the_domain():
     track = itunes(FakeHttp(load_fixture("itunes_search.json"))).find_track("x")
 

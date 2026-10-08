@@ -17,5 +17,5 @@ class ITunesMusicProvider:
             if not results:
                 return None
             return Track(title=results[0]["trackName"], artist=results[0]["artistName"], source="itunes")
-        except (KeyError, TypeError, IndexError) as e:
+        except (KeyError, TypeError, IndexError, ValueError) as e:
             raise ProviderUnavailable(f"itunes: réponse inattendue ({e!r})") from e

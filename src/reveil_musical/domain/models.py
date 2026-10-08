@@ -1,6 +1,6 @@
 """Modèles métier purs : aucun détail technique, aucun champ propre à un fournisseur."""
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 
 
@@ -34,6 +34,12 @@ class Track:
     artist: str
     source: str
 
+    def __post_init__(self):
+        for name in ("title", "artist"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"Track.{name} doit être une chaîne non vide, reçu {value!r}")
+
 
 @dataclass(frozen=True)
 class UserProfile:
@@ -42,6 +48,8 @@ class UserProfile:
     backup_track: str
     preferred_channel: Channel
     contacts: Mapping[Channel, str]
+    # Surcharge facultative : un morceau pour un couple (jour, météo) précis.
+    tracks_by_day: Mapping[tuple[DayOfWeek, Weather], str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
