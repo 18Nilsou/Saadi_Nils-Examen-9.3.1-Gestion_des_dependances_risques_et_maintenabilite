@@ -13,10 +13,11 @@ python3.13 -m venv .venv
 
 .venv/bin/pytest                      # unitaires + contrats + architecture, sans réseau, couverture ≥ 90 % imposée
 .venv/bin/pytest -m e2e --no-cov      # bout en bout contre les vraies API iTunes / MusicBrainz
-scripts/audit.sh                      # licences, vulnérabilités, fraîcheur, SBOM (bloquant si copyleft ou CVE)
+scripts/audit.sh                      # licences, vulnérabilités, fraîcheur, SBOM (bloquant si licence non admise ou CVE)
+scripts/audit_selftest.sh             # vérifie que l'audit bloque bien des licences piégées
 ```
 
-Les tests et l'audit tournent aussi en **CI** (`.github/workflows/ci.yml`) à chaque push et à chaque PR : un changement qui casse une règle de couche, un contrat, une licence ou fait apparaître une CVE est refusé.
+Les tests et l'audit tournent aussi en **CI** (`.github/workflows/ci.yml`) à chaque push et à chaque PR : un changement qui casse une règle de couche, un contrat, une licence, l'audit lui-même ou fait apparaître une CVE est refusé. Le runner (`ubuntu-24.04`) et les actions sont épinglés, comme les paquets.
 
 ---
 
@@ -205,7 +206,8 @@ Seams utilisés : les ports du domaine ; `JsonHttpClient` (remplacé par `FakeHt
 
 | Étape | Outil | Effet |
 |---|---|---|
-| Licences de **tout** l'environnement (directes + transitives, runtime + dev) | `pip-licenses --allow-only "MIT;BSD;Apache;Python Software Foundation;PSF-2.0;Mozilla Public License 2.0" --fail-on "GPL;SSPL;EUPL" --partial-match` | **bloquant**. **Liste blanche** : une licence absente, `UNKNOWN` ou jamais vue bloque jusqu'à vérification humaine. Liste noire en garde-fou (« GPL » couvre aussi AGPL et LGPL). Vérifié par mutation : sans l'exclusion de notre propre paquet, lu `UNKNOWN`, l'audit échoue ; retirer MPL de la liste fait échouer `certifi` ; installer `chardet` 5.2.0 (LGPL) fait échouer l'audit. |
+| Licences de **tout** l'environnement (directes + transitives, runtime + dev) | `pip-licenses --allow-only "$ALLOWED"` (correspondance **exacte**), puis `pip-licenses --partial-match --fail-on "$DENIED"` | **bloquant**. **Liste blanche exacte** des 11 libellés de licence admis : une licence absente, `UNKNOWN` ou jamais vue (même permissive, ex. `MIT-0`) bloque jusqu'à vérification humaine. Elle n'utilise **jamais** `--partial-match` : `pip-licenses` y cherche « MIT » comme sous-chaîne, sans casse, et acceptait donc « Limited Use », « submit », « Permits »… (une licence propriétaire passait l'audit). **Liste noire** en sous-chaîne, en garde-fou pour un paquet qui déclare à la fois une licence admise et une interdite : « GPL » (couvre AGPL et LGPL), SSPL, EUPL, Commons Clause, Proprietary, Non-Commercial, BUSL, Elastic License. Vérifié par mutation : sans l'exclusion de notre propre paquet, lu `UNKNOWN`, l'audit échoue ; installer `chardet` 5.2.0 (LGPL) fait échouer l'audit. |
+| Auto-test de l'audit | `scripts/audit_selftest.sh` (en CI) | **bloquant**. Installe un faux paquet le temps de chaque essai : 9 licences piégées (propriétaire « Limited Use », Commons Clause, Elastic, CC-BY-NC, `GPL OR MIT`, LGPL, double classifier MIT + Proprietary, `MIT-0` jamais vue…) doivent être bloquées, le témoin MIT accepté. Remettre `--partial-match` sur la liste blanche fait échouer ce test. |
 | Vulnérabilités connues sur les versions exactes de `requirements-dev.lock` | `pip-audit --strict` | **bloquant** |
 | Fraîcheur | `pip list --outdated` | informatif |
 | SBOM CycloneDX 1.6 des **seules dépendances livrées** → `sbom.cdx.json` | `cyclonedx-bom` 7.5.0 (Apache-2.0) | lancé dans un environnement jetable : l'installer dans le projet aurait ajouté 21 paquets à auditer |
@@ -290,7 +292,7 @@ Une **correction de sécurité** (CVE remontée par `pip-audit`) passe en priori
 ### Points qui demandent une justification
 
 - **`dependency-injector`, mainteneur unique (« bus factor », J2)** : on l'accepte parce que son usage est **confiné à `container.py`**. Le domaine, l'application et l'infrastructure n'en savent rien. Pour le remplacer, il suffirait de réécrire ce seul fichier en composition root manuelle, sans toucher au reste.
-- **`certifi`, MPL-2.0** (copyleft *faible*, fichier par fichier) : utilisé seulement par l'outillage de dev (`pip-audit` → `requests`), **ni modifié ni distribué** avec le produit, donc sans obligation. Il est toléré par l'audit, qui ne bloque que le copyleft fort.
+- **`certifi`, MPL-2.0** (copyleft *faible*, fichier par fichier) : utilisé seulement par l'outillage de dev (`pip-audit` → `requests`), **ni modifié ni distribué** avec le produit, donc sans obligation. Son libellé exact figure dans la liste blanche, après cette vérification humaine.
 - **`nab*`, versions 0.0.x** (J2, SemVer : une version 0.x n'offre aucune garantie de stabilité d'API) : ce sont des dépendances de `pipdeptree`, outil de dev qui n'est pas livré. Le risque se limite à l'outillage, et les versions sont figées dans `requirements-dev.lock`.
 - **Copyleft fort (GPL / AGPL / LGPL) : aucun**, ni en runtime ni en dev.
 - **Limite connue** : `requirements-dev.lock` épingle les versions mais pas les **empreintes (hashes)**. Pour fermer la porte à un paquet republié sous la même version, il faudrait passer à `pip-compile --generate-hashes`.

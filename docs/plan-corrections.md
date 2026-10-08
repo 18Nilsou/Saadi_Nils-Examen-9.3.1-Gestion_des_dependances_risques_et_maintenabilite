@@ -111,7 +111,8 @@
 | R3 | Aucune CI : garde-fous d'architecture et audit lancés « si on y pense ». | `.github/workflows/ci.yml` : `pytest` + `scripts/audit.sh` à chaque push / PR. | — |
 | R4 | SMS : le « — » forçait l'encodage UCS-2 (70 car./segment), 3 SMS facturés au lieu d'1 ; le sujet tronquait le morceau. | `SmsNotificationAdapter` : texte ramené en GSM-7, sinon un segment UCS-2 de 70 car. ; corps seul. | `test_notification_adapters.py::test_sms_stays_in_the_gsm_alphabet_so_one_message_is_billed`, `test_an_sms_that_cannot_stay_in_gsm_fits_in_one_unicode_segment` |
 | R5 | Mémo des profils en pickle : un champ ajouté à `UserProfile` faisait planter le réveil pendant une panne du service utilisateurs. | `last_known._rebuild` repasse le profil par le constructeur (champ ajouté → défaut, champ retiré → ignoré, incompatible → absent). | `test_user_repository.py::test_a_profile_stored_before_a_field_was_added_is_still_usable`, `test_a_profile_stored_with_a_field_since_removed_is_still_usable`, `test_an_incompatible_stored_profile_is_treated_as_absent` |
+| R6 | Audit des licences : avec `--partial-match`, « MIT » était cherché comme sous-chaîne sans casse, donc « Limited Use », « submit a request », « Permits »… passaient la liste blanche ; un double classifier MIT + Proprietary passait aussi. | Liste blanche en correspondance **exacte** (11 libellés) + liste noire en sous-chaîne élargie (Commons Clause, Proprietary, Non-Commercial, BUSL, Elastic). `audit.sh --licences-only`. | `scripts/audit_selftest.sh` (en CI) : 9 licences piégées bloquées, témoin MIT accepté ; échoue si l'on remet `--partial-match` sur la liste blanche. |
 
 **Reste ouvert (non bloquant)** :
-- `audit.sh` : `--partial-match` laisse passer « Apache-2.0 WITH Commons-Clause » ; SBOM sans identifiant SPDX ni empreintes ; `setuptools` (build) non épinglé.
+- SBOM sans identifiant SPDX ni empreintes ; `setuptools` (build) non épinglé.
 - Mode lot séquentiel sans échéance globale.
