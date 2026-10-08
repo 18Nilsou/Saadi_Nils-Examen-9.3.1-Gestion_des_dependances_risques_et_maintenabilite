@@ -4,7 +4,11 @@ from fakes import FakeClock
 from reveil_musical.application.music_chain import MusicFallbackChain
 from reveil_musical.domain.errors import ProviderUnavailable
 from reveil_musical.domain.models import Track
-from reveil_musical.infrastructure.music.guards import CachingMusicProvider, RateLimitedMusicProvider
+from reveil_musical.infrastructure.music.guards import (
+    CachingMusicProvider,
+    CircuitBreakerMusicProvider,
+    RateLimitedMusicProvider,
+)
 from reveil_musical.infrastructure.music.local import DEFAULT_TRACKS, LocalFallbackMusicProvider
 
 TRACK = Track("Clouds", "Zara Larsson", "fake")
@@ -120,3 +124,61 @@ def test_chain_ends_on_local_list_when_every_remote_is_down():
 def test_chain_with_nothing_left_raises():
     with pytest.raises(ProviderUnavailable):
         MusicFallbackChain([CountingProvider(error="500")]).resolve("q")
+
+
+# --- Coupe-circuit ---
+
+def breaker(inner, clock):
+    return CircuitBreakerMusicProvider(inner, clock, failure_threshold=3, reset_seconds=60)
+
+
+def fail_n_times(provider, n):
+    for _ in range(n):
+        with pytest.raises(ProviderUnavailable):
+            provider.find_track("q")
+
+
+def test_circuit_opens_after_consecutive_failures_and_stops_calling_the_provider():
+    inner, clock = CountingProvider(error="timeout"), FakeClock()
+    cb = breaker(inner, clock)
+    fail_n_times(cb, 3)
+
+    fail_n_times(cb, 5)  # circuit ouvert : on échoue tout de suite, sans attendre le timeout réseau
+
+    assert inner.calls == 3
+
+
+def test_a_success_resets_the_failure_count():
+    inner, clock = CountingProvider(error="timeout"), FakeClock()
+    cb = breaker(inner, clock)
+    fail_n_times(cb, 2)
+    inner.error = None
+    cb.find_track("q")
+    inner.error = "timeout"
+    fail_n_times(cb, 2)
+
+    assert inner.calls == 5  # jamais 3 échecs consécutifs : le circuit est resté fermé
+
+
+def test_after_the_delay_one_trial_call_closes_the_circuit_on_success():
+    inner, clock = CountingProvider(error="timeout"), FakeClock()
+    cb = breaker(inner, clock)
+    fail_n_times(cb, 3)
+    clock.advance(60)
+    inner.error = None
+
+    assert cb.find_track("q") == TRACK
+    assert cb.find_track("q") == TRACK
+    assert inner.calls == 5
+
+
+def test_a_failed_trial_call_reopens_the_circuit():
+    inner, clock = CountingProvider(error="timeout"), FakeClock()
+    cb = breaker(inner, clock)
+    fail_n_times(cb, 3)
+    clock.advance(60)
+    fail_n_times(cb, 1)  # essai semi-ouvert, échoue
+
+    fail_n_times(cb, 3)
+
+    assert inner.calls == 4

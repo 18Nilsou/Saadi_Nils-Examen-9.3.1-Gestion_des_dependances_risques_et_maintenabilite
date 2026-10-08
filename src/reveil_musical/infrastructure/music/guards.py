@@ -47,3 +47,32 @@ class CachingMusicProvider:
         track = self._inner.find_track(query)
         self._entries[key] = (now + self._ttl, track)
         return track
+
+
+class CircuitBreakerMusicProvider:
+    """Coupe-circuit (J1 : SPOF). Après `failure_threshold` échecs consécutifs, le circuit
+    s'ouvre : ProviderUnavailable immédiat, sans appel réseau, donc sans attendre un timeout
+    à chaque réveil. Après `reset_seconds`, un appel d'essai : succès -> fermé, échec -> ré-ouvert."""
+
+    def __init__(self, inner: MusicProvider, clock: Clock, failure_threshold: int, reset_seconds: float):
+        self._inner = inner
+        self._clock = clock
+        self._threshold = failure_threshold
+        self._reset = reset_seconds
+        self._failures = 0
+        self._opened_at: float | None = None
+
+    def find_track(self, query: str) -> Track | None:
+        if self._opened_at is not None:
+            if self._clock.now() - self._opened_at < self._reset:
+                raise ProviderUnavailable("circuit ouvert")
+            self._failures = self._threshold - 1  # semi-ouvert : un seul essai
+        try:
+            track = self._inner.find_track(query)
+        except ProviderUnavailable:
+            self._failures += 1
+            if self._failures >= self._threshold:
+                self._opened_at = self._clock.now()
+            raise
+        self._failures, self._opened_at = 0, None
+        return track

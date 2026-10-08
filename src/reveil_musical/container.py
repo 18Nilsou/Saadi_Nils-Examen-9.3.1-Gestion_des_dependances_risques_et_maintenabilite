@@ -20,7 +20,11 @@ from .application.wake_up import WakeUpUseCase
 from .domain.models import Channel
 from .infrastructure.clock import SystemClock
 from .infrastructure.http import JsonHttpClient
-from .infrastructure.music.guards import CachingMusicProvider, RateLimitedMusicProvider
+from .infrastructure.music.guards import (
+    CachingMusicProvider,
+    CircuitBreakerMusicProvider,
+    RateLimitedMusicProvider,
+)
 from .infrastructure.music.itunes import ITunesMusicProvider
 from .infrastructure.music.local import DEFAULT_TRACKS, LocalFallbackMusicProvider
 from .infrastructure.music.musicbrainz import MusicBrainzMusicProvider
@@ -59,15 +63,21 @@ class Container(containers.DeclarativeContainer):
     clock = providers.Singleton(SystemClock)
     http = providers.Singleton(JsonHttpClient, timeout=config.http_timeout)
 
-    # --- Musique : cache -> quota -> adapter, pour chaque fournisseur distant ---
+    # --- Musique : cache -> coupe-circuit -> quota -> adapter, pour chaque fournisseur distant ---
     itunes = providers.Singleton(
         CachingMusicProvider,
         inner=providers.Singleton(
-            RateLimitedMusicProvider,
-            inner=providers.Singleton(ITunesMusicProvider, http=http, base_url=config.itunes_url),
+            CircuitBreakerMusicProvider,
+            inner=providers.Singleton(
+                RateLimitedMusicProvider,
+                inner=providers.Singleton(ITunesMusicProvider, http=http, base_url=config.itunes_url),
+                clock=clock,
+                max_calls=20,
+                window_seconds=60,
+            ),
             clock=clock,
-            max_calls=20,
-            window_seconds=60,
+            failure_threshold=3,
+            reset_seconds=60,
         ),
         clock=clock,
         ttl_seconds=config.cache_ttl,
@@ -75,16 +85,22 @@ class Container(containers.DeclarativeContainer):
     musicbrainz = providers.Singleton(
         CachingMusicProvider,
         inner=providers.Singleton(
-            RateLimitedMusicProvider,
+            CircuitBreakerMusicProvider,
             inner=providers.Singleton(
-                MusicBrainzMusicProvider,
-                http=http,
-                base_url=config.musicbrainz_url,
-                user_agent=config.musicbrainz_user_agent,
+                RateLimitedMusicProvider,
+                inner=providers.Singleton(
+                    MusicBrainzMusicProvider,
+                    http=http,
+                    base_url=config.musicbrainz_url,
+                    user_agent=config.musicbrainz_user_agent,
+                ),
+                clock=clock,
+                max_calls=1,
+                window_seconds=1,
             ),
             clock=clock,
-            max_calls=1,
-            window_seconds=1,
+            failure_threshold=3,
+            reset_seconds=60,
         ),
         clock=clock,
         ttl_seconds=config.cache_ttl,

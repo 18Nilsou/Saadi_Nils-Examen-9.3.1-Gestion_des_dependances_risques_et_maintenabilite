@@ -70,3 +70,14 @@ def test_a_provider_can_be_removed_without_touching_the_code():
 def test_unknown_provider_name_fails_at_startup_not_at_wake_up_time():
     with pytest.raises(ValueError, match="spotify"):
         create_container({"REVEIL_MUSIC_PROVIDERS": "itunes,spotify"})
+
+
+def test_a_dead_provider_is_no_longer_called_once_its_circuit_is_open(container):
+    http = FakeHttp(error="timeout")
+    container.http.override(http)
+    use_case = container.wake_up_use_case()
+
+    for _ in range(5):
+        assert use_case.execute("u1", DayOfWeek.LUNDI, Weather.SOLEIL).track.source == "local"
+
+    assert sum("itunes" in call["url"] for call in http.calls) == 3
