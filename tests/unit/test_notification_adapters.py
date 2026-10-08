@@ -24,6 +24,12 @@ def test_email_adapter_maps_to_send_mail_with_html_body():
     assert spy.calls == [("a@example.com", "Bon lundi !", f"<p>{MESSAGE.body}</p>")]
 
 
+
+def test_email_adapter_escapes_html_coming_from_a_music_provider():
+    spy = Spy()
+    EmailNotificationAdapter(spy).send("a@example.com", WakeUpMessage("S", "<img src=x onerror=alert(1)> & co"))
+    assert spy.calls[0][2] == "<p>&lt;img src=x onerror=alert(1)&gt; &amp; co</p>"
+
 def test_sms_adapter_flattens_and_truncates_to_160_chars():
     spy = Spy()
     long_message = WakeUpMessage(subject="S", body="x" * 300)

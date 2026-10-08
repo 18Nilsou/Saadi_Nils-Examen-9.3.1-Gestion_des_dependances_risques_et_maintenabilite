@@ -5,7 +5,7 @@ import pytest
 from fakes import FakeClock
 
 from reveil_musical.application.music_chain import MusicFallbackChain
-from reveil_musical.domain.errors import ProviderUnavailable
+from reveil_musical.domain.errors import ProviderUnavailable, QuotaExceeded
 from reveil_musical.domain.models import Track
 from reveil_musical.infrastructure.music.guards import (
     CachingMusicProvider,
@@ -207,6 +207,20 @@ def test_a_failed_trial_call_reopens_the_circuit():
 
     assert inner.calls == 4
 
+
+
+def test_quota_rejections_never_open_the_circuit_of_a_healthy_provider():
+    """Régression : 3 refus de NOTRE quota coupaient 60 s une source saine (MusicBrainz, 1 req/s)."""
+    inner, clock = CountingProvider(), FakeClock()
+    cb = breaker(RateLimitedMusicProvider(inner, clock, max_calls=1, window_seconds=1), clock)
+    cb.find_track("a")
+    for _ in range(5):
+        with pytest.raises(QuotaExceeded):
+            cb.find_track("b")
+    clock.advance(1.1)  # le quota se libère : la source doit répondre, pas « circuit ouvert »
+
+    assert cb.find_track("c") == TRACK
+    assert inner.calls == 2
 
 # --- Concurrence : plusieurs réveils au même instant ---
 

@@ -4,7 +4,7 @@ thread-safe. Chaque verrou ne protège que l'état, jamais l'appel réseau (pas 
 import threading
 from collections import deque
 
-from reveil_musical.domain.errors import ProviderUnavailable
+from reveil_musical.domain.errors import ProviderUnavailable, QuotaExceeded
 from reveil_musical.domain.models import Track
 from reveil_musical.domain.ports import Clock, MusicProvider
 
@@ -27,7 +27,7 @@ class RateLimitedMusicProvider:
             while self._calls and self._calls[0] <= now - self._window:
                 self._calls.popleft()
             if len(self._calls) >= self._max_calls:
-                raise ProviderUnavailable("quota de requêtes atteint")
+                raise QuotaExceeded("quota de requêtes atteint")
             self._calls.append(now)
         return self._inner.find_track(query)
 
@@ -60,7 +60,8 @@ class CircuitBreakerMusicProvider:
     """Coupe-circuit (J1 : SPOF). Après `failure_threshold` échecs consécutifs, le circuit
     s'ouvre : ProviderUnavailable immédiat, sans appel réseau, donc sans attendre un timeout
     à chaque réveil. Après `reset_seconds`, un seul appel d'essai (semi-ouvert) :
-    succès -> fermé, échec -> ré-ouvert."""
+    succès -> fermé, échec -> ré-ouvert. Un refus du quota placé derrière (QuotaExceeded)
+    n'est pas un échec : sinon une source saine serait coupée 60 s par notre propre limite."""
 
     def __init__(self, inner: MusicProvider, clock: Clock, failure_threshold: int, reset_seconds: float):
         self._inner = inner
@@ -81,6 +82,8 @@ class CircuitBreakerMusicProvider:
                 self._opened_at, self._failures = now, self._threshold - 1
         try:
             track = self._inner.find_track(query)
+        except QuotaExceeded:
+            raise  # notre propre limite, pas une panne du fournisseur : ne compte pas
         except ProviderUnavailable:
             with self._lock:
                 self._failures += 1

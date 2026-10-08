@@ -33,10 +33,11 @@ def imports_of(source: str, package: str | None = None) -> set[str]:
     return found
 
 
-def infrastructure_classes() -> set[str]:
+def injectable_classes() -> set[str]:
+    """Classes d'infrastructure et d'application : seul le conteneur les instancie."""
     return {
         node.name
-        for path in modules("infrastructure")
+        for path in modules("infrastructure") + modules("application")
         for node in ast.walk(ast.parse(path.read_text()))
         if isinstance(node, ast.ClassDef) and not node.name.endswith(("Error", "Rejected"))
     }
@@ -89,5 +90,9 @@ def test_infrastructure_depends_on_the_domain_never_on_application_or_container(
 @pytest.mark.parametrize(
     "path", [p for p in SRC.rglob("*.py") if p.name != "container.py"], ids=lambda p: str(p.relative_to(SRC))
 )
-def test_no_concrete_infrastructure_class_is_instantiated_outside_the_container(path):
-    assert instantiations(path.read_text(), infrastructure_classes()) == set()
+def test_no_injectable_class_is_instantiated_outside_the_container(path):
+    assert instantiations(path.read_text(), injectable_classes()) == set()
+
+
+def test_application_classes_are_watched_too():
+    assert {"MusicFallbackChain", "NotificationDispatcher", "WakeUpUseCase"} <= injectable_classes()

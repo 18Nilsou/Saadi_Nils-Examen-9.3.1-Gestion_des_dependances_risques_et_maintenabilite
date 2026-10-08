@@ -38,6 +38,7 @@ from .infrastructure.notifications.adapters import (
 )
 from .infrastructure.notifications.clients import EmailClient, PushNotifier, SmsGateway
 from .infrastructure.users.in_memory import DEMO_PROFILES, InMemoryUserPreferencesRepository
+from .infrastructure.users.last_known import LastKnownUserPreferencesRepository, open_profile_store
 
 # Dépendances implicites documentées : chaque clé est surchargeable par REVEIL_<CLE>.
 DEFAULTS = {
@@ -47,6 +48,7 @@ DEFAULTS = {
     "musicbrainz_user_agent": "ReveilMusical/0.1 ( https://github.com/18Nilsou/Saadi_Nils-Examen-9.3.1-Gestion_des_dependances_risques_et_maintenabilite )",
     "http_timeout": 3.0,
     "cache_ttl": 86400.0,
+    "profile_cache": "",  # fichier du dernier profil connu ; vide = mémoire seule (perdu à la fin du processus)
 }
 
 
@@ -128,8 +130,13 @@ class Container(containers.DeclarativeContainer):
         last_resort=last_resort,
     )
 
-    # --- Utilisateurs (mock du service interne) ---
-    users = providers.ThreadSafeSingleton(InMemoryUserPreferencesRepository, profiles=providers.Object(DEMO_PROFILES))
+    # --- Utilisateurs (mock du service interne), doublé par le dernier profil connu ---
+    profile_store = providers.ThreadSafeSingleton(open_profile_store, config.profile_cache)
+    users = providers.ThreadSafeSingleton(
+        LastKnownUserPreferencesRepository,
+        inner=providers.ThreadSafeSingleton(InMemoryUserPreferencesRepository, profiles=providers.Object(DEMO_PROFILES)),
+        store=profile_store,
+    )
 
     wake_up_use_case = providers.Factory(WakeUpUseCase, users=users, music=music_chain, notifier=notifier)
 
@@ -160,4 +167,8 @@ def create_container(env: Mapping[str, str] = os.environ) -> Container:
     unknown = set(names) - set(container.remote_music.kwargs)
     if unknown:
         raise ValueError(f"REVEIL_MUSIC_PROVIDERS : fournisseur(s) inconnu(s) {sorted(unknown)}")
+    try:
+        container.profile_store()  # fichier illisible ou interdit : on le sait au démarrage
+    except Exception as e:
+        raise ValueError(f"REVEIL_PROFILE_CACHE : {e}") from None
     return container

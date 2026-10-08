@@ -1,4 +1,5 @@
 """Adapters : ramènent chaque SDK hétérogène au port unique NotificationSender."""
+import html
 import logging
 
 from reveil_musical.domain.errors import NotificationFailed
@@ -15,7 +16,8 @@ class EmailNotificationAdapter:
 
     def send(self, contact: str, message: WakeUpMessage) -> None:
         try:
-            self._client.send_mail(contact, message.subject, f"<p>{message.body}</p>")
+            # le corps contient un titre venu d'une API tierce : jamais de HTML brut
+            self._client.send_mail(contact, message.subject, f"<p>{html.escape(message.body)}</p>")
         except EmailDeliveryError as e:
             raise NotificationFailed(f"email: {e}") from e
 

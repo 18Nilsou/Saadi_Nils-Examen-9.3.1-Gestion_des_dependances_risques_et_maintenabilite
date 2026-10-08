@@ -25,7 +25,7 @@ scripts/audit.sh                      # licences, vulnérabilités, fraîcheur, 
 | Changer **vite** de fournisseur musical | Port `MusicProvider` + un **Adapter** par source. Choix et ordre des sources par la variable **`REVEIL_MUSIC_PROVIDERS`**, sans toucher au code. |
 | Plusieurs **canaux** de notification, d'autres à venir | Port `NotificationSender` + un **Adapter** par SDK (3 faux SDK aux signatures différentes). `NotificationDispatcher` (**Strategy**) choisit selon le profil. |
 | **Aucune** dépendance sans contrôle licence / fraîcheur | Une seule dépendance runtime. **`scripts/audit.sh`** rend le contrôle rejouable et bloquant. SBOM CycloneDX (`sbom.cdx.json`) + tableau complet (§5). Versions épinglées. |
-| **Jamais** de silence | Musique : **cache → coupe-circuit → quota** devant chaque source, puis **chaîne de repli** iTunes → MusicBrainz → liste locale, **quelle que soit l'exception** d'une source (bug d'adapter compris). Canal : préféré → autres canaux de l'utilisateur → log de dernier recours, **quelle que soit l'exception** du canal. Panne non rattrapable → log `CRITICAL` + code de sortie ≠ 0. |
+| **Jamais** de silence | Musique : **cache → coupe-circuit → quota** devant chaque source, puis **chaîne de repli** iTunes → MusicBrainz → liste locale, **quelle que soit l'exception** d'une source (bug d'adapter compris). Canal : préféré → autres canaux de l'utilisateur → log de dernier recours, **quelle que soit l'exception** du canal. Service utilisateurs injoignable → **dernier profil connu**. Panne non rattrapable → log `CRITICAL` + code de sortie ≠ 0. |
 | Morceau selon le **jour** et la **météo** | Le service utilisateur fournit un morceau par météo + un morceau de secours. Le profil accepte en plus une **surcharge facultative (jour, météo)** : (jour, météo) → météo → secours. |
 
 ## 2. Architecture
@@ -42,7 +42,8 @@ scripts/audit.sh                      # licences, vulnérabilités, fraîcheur, 
                infrastructure/  ─── implémente les ports ───►
                music/ itunes · musicbrainz · local · guards (cache, coupe-circuit, quota)
                notifications/ clients (faux SDK) · adapters
-               users/ in_memory (mock du service interne)   http.py (urllib)   clock.py
+               users/ in_memory (mock du service interne) · last_known (dernier profil connu)
+               http.py (urllib)   clock.py
 ```
 
 ### Graphe de dépendances (J1 : « de la liste au graphe »)
@@ -76,7 +77,9 @@ Les dépendances vont toujours vers le domaine. Règles vérifiées à chaque ex
 - `domain/` n'importe que `collections`, `dataclasses`, `enum`, `typing` ;
 - `application/` n'importe ni `infrastructure`, ni le conteneur, ni un module réseau/JSON ;
 - `infrastructure/` n'importe ni `application`, ni le conteneur (imports relatifs résolus) ;
-- aucune classe d'`infrastructure` n'est instanciée hors de `container.py`, ni en `Classe(...)` ni en `module.Classe(...)` (« pas de `new` »).
+- aucune classe d'`infrastructure` ni d'`application` n'est instanciée hors de `container.py`, ni en `Classe(...)` ni en `module.Classe(...)` (« pas de `new` »).
+
+`WakeUpUseCase` ne connaît que des abstractions : le port `UserPreferencesRepository` et deux protocoles d'application, `TrackResolver` (tenu par `MusicFallbackChain`) et `Notifier` (tenu par `NotificationDispatcher`).
 
 **Aucune fuite de DTO** : le JSON iTunes (`trackName`, `trackViewUrl`…) et MusicBrainz (`title`, `artist-credit`) est converti en `Track` *dans* l'adapter. `Track` n'a que `title`, `artist`, `source` et **refuse un titre ou un artiste vide** : une réponse fournisseur sans contenu devient `ProviderUnavailable` et déclenche le repli au lieu d'un message « None — None ».
 
@@ -87,7 +90,7 @@ Les dépendances vont toujours vers le domaine. Règles vérifiées à chaque ex
 | Adapter | `music/itunes.py`, `music/musicbrainz.py`, `notifications/adapters.py` | API externes au format différent du modèle interne |
 | Strategy | `NotificationDispatcher` | comportement d'envoi choisi au runtime selon le profil |
 | Chain of Responsibility | `MusicFallbackChain` | repli ordonné entre fournisseurs |
-| Decorator | `music/guards.py` | cache, coupe-circuit et quota ajoutés sans toucher aux adapters |
+| Decorator | `music/guards.py`, `users/last_known.py` | cache, coupe-circuit, quota et dernier profil connu ajoutés sans toucher aux adapters |
 
 **Patterns volontairement écartés** (J2 : « un pattern n'est pas un objectif en soi ») :
 - **Facade** : son rôle (offrir une seule méthode au-dessus de plusieurs dépendances techniques) est déjà tenu par `WakeUpUseCase.execute`, qui orchestre utilisateurs, musique et notification derrière un seul appel. Une facade de plus serait une couche vide.
@@ -99,11 +102,13 @@ Les dépendances vont toujours vers le domaine. Règles vérifiées à chaque ex
 morceau :  [cache → coupe-circuit → quota → iTunes] ──(panne / circuit ouvert / quota / rien trouvé / bug)──►
            [cache → coupe-circuit → quota → MusicBrainz] ──► liste locale (renvoie toujours un morceau)
 canal   :  canal préféré ──(n'importe quelle exception)──► autres canaux de l'utilisateur ──► LogNotificationSender
+profil  :  service utilisateurs ──(n'importe quelle exception sauf « inconnu »)──► dernier profil connu
 ```
 - **Sources nommées** (`itunes`, `musicbrainz`, `local`) : le journal dit quelle source est en panne (`fournisseur itunes indisponible : circuit ouvert`). Un bug d'adapter est tracé avec sa trace complète, puis la chaîne passe à la source suivante.
-- **Quota** (iTunes 20 req/min, MusicBrainz 1 req/s) : dépassé → `ProviderUnavailable` immédiat, on **bascule au lieu d'attendre**.
-- **Coupe-circuit** (J1 : SPOF) : après 3 échecs consécutifs, la source n'est plus appelée pendant 60 s, donc on n'attend plus le timeout réseau (3 s) à chaque réveil. Ensuite, un seul appel d'essai : succès → fermé, échec → ré-ouvert.
+- **Quota** (iTunes 20 req/min, MusicBrainz 1 req/s) : dépassé → `QuotaExceeded` (une `ProviderUnavailable`) immédiat, on **bascule au lieu d'attendre**.
+- **Coupe-circuit** (J1 : SPOF) : après 3 échecs consécutifs, la source n'est plus appelée pendant 60 s, donc on n'attend plus le timeout réseau (3 s) à chaque réveil. Ensuite, un seul appel d'essai : succès → fermé, échec → ré-ouvert. Un refus de **notre** quota n'est **pas** compté comme une panne : avant cette correction, trois refus coupaient 60 s une source saine (MusicBrainz, qui n'accepte qu'1 req/s, était coupé dès la 4ᵉ requête d'une tournée).
 - **Cache** placé devant : une requête connue ne consomme ni quota ni appel réseau. Les « non trouvé » sont mis en cache, les pannes non.
+- **Dernier profil connu** (J1 : SPOF du service utilisateurs) : chaque profil lu est mémorisé. Si le service tombe, le réveil part avec le profil mémorisé (tracé en `WARNING`). Un utilisateur **inconnu** n'est jamais masqué, et son profil mémorisé est effacé. Un échec d'écriture du mémo n'empêche jamais le réveil. Pour que le mémo survive d'une tournée à l'autre, `REVEIL_PROFILE_CACHE` doit désigner un fichier.
 - **Concurrence** : l'état du cache, du quota et du coupe-circuit est protégé par un verrou (jamais pendant l'appel réseau), et tous les singletons sont des `ThreadSafeSingleton`. Un test reproduit la course : sans verrou, 50 réveils simultanés font 50 appels au lieu de 20.
 - **Mode lot (`--batch`)** : cache, quota et coupe-circuit vivent dans le processus. Lancer un processus par réveil les remettrait à zéro à chaque fois. L'ordonnanceur doit donc lancer la tournée **dans un seul processus** : `--batch fichier.csv` (une ligne `user,jour,meteo`). Une ligne invalide est tracée et n'empêche pas les suivantes. Un lot vide ou illisible est une erreur, pas un succès silencieux.
 - **Codes de sortie** (lus par l'ordonnanceur ; aucune erreur Python brute, toujours un message clair) :
@@ -112,7 +117,7 @@ canal   :  canal préféré ──(n'importe quelle exception)──► autres c
   |---|---|
   | 0 | tous les réveils envoyés (éventuellement en mode dégradé) |
   | 2 | utilisateur inconnu, ou arguments invalides |
-  | 1 | **réveil non livré** : panne non rattrapable (ex. service utilisateurs injoignable, tracée en `CRITICAL « RÉVEIL NON LIVRÉ »`), configuration invalide, lot vide ou illisible, ligne de lot invalide |
+  | 1 | **réveil non livré** : panne non rattrapable (ex. service utilisateurs injoignable **sans profil mémorisé**, tracée en `CRITICAL « RÉVEIL NON LIVRÉ »`), configuration invalide, lot vide ou illisible, ligne de lot invalide |
 
   Pour un lot, le code est celui du problème **le plus grave** (1 > 2 > 0) : une ligne invalide n'est pas masquée par un utilisateur inconnu.
 
@@ -120,7 +125,7 @@ canal   :  canal préféré ──(n'importe quelle exception)──► autres c
 
 | Composant | Durée de vie | Raison |
 |---|---|---|
-| `JsonHttpClient`, `SystemClock`, adapters musique + caches + coupe-circuits + quotas, faux SDK + adapters notif, dépôt utilisateurs | **Singleton** (`ThreadSafeSingleton`) | sans état par réveil, ou état qui **doit** être partagé : un quota recréé à chaque appel ne limiterait rien. `providers.Singleton` n'est pas thread-safe. |
+| `JsonHttpClient`, `SystemClock`, adapters musique + caches + coupe-circuits + quotas, faux SDK + adapters notif, dépôt utilisateurs + mémo des profils | **Singleton** (`ThreadSafeSingleton`) | sans état par réveil, ou état qui **doit** être partagé : un quota recréé à chaque appel ne limiterait rien. `providers.Singleton` n'est pas thread-safe. |
 | `MusicFallbackChain`, `NotificationDispatcher`, `WakeUpUseCase` | **Factory (transient)** | orchestrations légères, sans état |
 | Scoped | non utilisé | aucun état « par réveil » à partager |
 
@@ -138,6 +143,7 @@ Toute valeur invalide arrête le programme **au démarrage**, en nommant la vari
 | `REVEIL_MUSICBRAINZ_USER_AGENT` | `ReveilMusical/0.1 ( <URL du dépôt> )` | exigé par MusicBrainz ; une URL plutôt qu'un email personnel |
 | `REVEIL_HTTP_TIMEOUT` | `3.0` s | |
 | `REVEIL_CACHE_TTL` | `86400` s | |
+| `REVEIL_PROFILE_CACHE` | *(vide)* | fichier du dernier profil connu (`shelve`). Vide : mémoire seule, perdue à la fin du processus. **À renseigner en production.** Fichier inaccessible → échec **au démarrage**. Le fichier ne doit être inscriptible que par le service (`shelve` désérialise via `pickle`). |
 
 Démonstrations :
 ```bash
@@ -156,7 +162,7 @@ REVEIL_ITUNES_URL=http://127.0.0.1:9 REVEIL_MUSICBRAINZ_URL=http://127.0.0.1:9 \
 
 | Dossier | Ce qui est garanti |
 |---|---|
-| `tests/unit/` | règles du domaine (surcharge jour, secours, invariant `Track`) ; use case avec fakes (nominal, panne musique → local, panne canal → autre canal, panne totale → dernier recours) ; cache, quota, coupe-circuit, chaîne de repli (y compris bug imprévu d'un adapter, sources nommées dans le journal), concurrence ; dispatcher (y compris exception imprévue d'un SDK) ; adapters de notification (signatures hétérogènes, SMS ≤ 160 car., contacts masqués) ; conteneur (sélection par config, durées validées, coupe-circuit câblé, durées de vie, dépendance captive, singletons thread-safe) ; CLI (codes de sortie, lot, casse) |
+| `tests/unit/` | règles du domaine (surcharge jour, secours, invariant `Track`) ; use case avec fakes (nominal, panne musique → local, panne canal → autre canal, panne totale → dernier recours) ; cache, quota, coupe-circuit (un refus de quota ne l'ouvre jamais, y compris sur une tournée chargée), chaîne de repli (y compris bug imprévu d'un adapter, sources nommées dans le journal), concurrence ; dernier profil connu (panne, utilisateur supprimé, écriture impossible, persistance entre deux tournées) ; dispatcher (y compris exception imprévue d'un SDK) ; adapters de notification (signatures hétérogènes, HTML échappé dans l'email, SMS ≤ 160 car., contacts masqués) ; conteneur (sélection par config, durées validées, coupe-circuit câblé, durées de vie, dépendance captive, singletons thread-safe) ; CLI (codes de sortie, lot, casse) |
 | `tests/contract/` | **contrats par abstraction** : la même suite pour les 6 implémentations de `MusicProvider` et les 4 de `NotificationSender`. Elle est vérifiée par mutation : un adapter qui renvoie le JSON brut fait échouer le contrat. S'y ajoutent les adapters iTunes / MusicBrainz contre des **réponses réelles enregistrées** (`tests/fixtures/`), et `JsonHttpClient` contre un serveur HTTP **local** (200, 500, HTML, timeout, hôte injoignable). |
 | `tests/architecture/` | règles de couches et « pas de `new` » (§2) |
 | `tests/e2e/` | vraies API iTunes et MusicBrainz, et CLI complète. Marqueur `e2e`, exclu par défaut. |
@@ -184,12 +190,12 @@ Seams utilisés : les ports du domaine ; `JsonHttpClient` (remplacé par `FakeHt
 |---|---|---|---|---|---|
 | iTunes Search API | chaque réveil (source n°1) | trouver le morceau | **nul** (Apple, sans SLA) | 🔴 haute | Adapter, cache, coupe-circuit, quota, repli, retrait par config |
 | MusicBrainz API | réveils où iTunes échoue | trouver le morceau (secours) | **nul** (MetaBrainz) | 🟠 moyenne | Adapter, cache, coupe-circuit, quota, repli local |
-| Service utilisateurs | chaque réveil | profil, morceaux, canal : **indispensable** | interne | 🔴 haute | port `UserPreferencesRepository` ; panne → `CRITICAL` + code 1 pour alerter |
+| Service utilisateurs | chaque réveil | profil, morceaux, canal : **indispensable** | interne | 🔴 haute | port `UserPreferencesRepository` + dernier profil connu ; panne sans profil mémorisé → `CRITICAL` + code 1 pour alerter |
 | SDK email / SMS / push | chaque réveil (1 canal) | prévenir l'utilisateur | nul en réel (fournisseurs tiers) | 🟠 moyenne | Adapter par SDK, repli sur les autres canaux puis log |
 | `dependency-injector` | 1 fichier (`container.py`) | aucun (câblage) | open source, 1 mainteneur | 🟢 faible | confiné ; remplaçable par une composition root manuelle |
 | Bibliothèque standard Python | `http.py`, `guards.py`, CLI | transport, verrous | élevé (CPython) | 🟢 faible | version supportée (3.13) |
 
-**SPOF neutralisés** : chaque fournisseur musical et chaque canal est derrière une interface, doublé, protégé par un coupe-circuit pour la musique, et le dernier maillon (liste locale, log) ne dépend d'aucun réseau.
+**SPOF neutralisés** : chaque fournisseur musical et chaque canal est derrière une interface, doublé, protégé par un coupe-circuit pour la musique, et le dernier maillon (liste locale, log) ne dépend d'aucun réseau. Le service utilisateurs est doublé par le dernier profil connu.
 
 ## 5. SBOM & audit (au 2026-10-08)
 
@@ -197,12 +203,12 @@ Seams utilisés : les ports du domaine ; `JsonHttpClient` (remplacé par `FakeHt
 
 | Étape | Outil | Effet |
 |---|---|---|
-| Licences de **tout** l'environnement (directes + transitives, runtime + dev) | `pip-licenses --fail-on "GPL;SSPL;EUPL" --partial-match` | **bloquant** (« GPL » couvre aussi AGPL et LGPL). Vérifié par mutation : installer `chardet` 5.2.0 (LGPL) fait échouer l'audit. |
+| Licences de **tout** l'environnement (directes + transitives, runtime + dev) | `pip-licenses --allow-only "MIT;BSD;Apache;Python Software Foundation;PSF-2.0;Mozilla Public License 2.0" --fail-on "GPL;SSPL;EUPL" --partial-match` | **bloquant**. **Liste blanche** : une licence absente, `UNKNOWN` ou jamais vue bloque jusqu'à vérification humaine. Liste noire en garde-fou (« GPL » couvre aussi AGPL et LGPL). Vérifié par mutation : sans l'exclusion de notre propre paquet, lu `UNKNOWN`, l'audit échoue ; retirer MPL de la liste fait échouer `certifi` ; installer `chardet` 5.2.0 (LGPL) fait échouer l'audit. |
 | Vulnérabilités connues sur les versions exactes de `requirements-dev.lock` | `pip-audit --strict` | **bloquant** |
 | Fraîcheur | `pip list --outdated` | informatif |
 | SBOM CycloneDX 1.6 des **seules dépendances livrées** → `sbom.cdx.json` | `cyclonedx-bom` 7.5.0 (Apache-2.0) | lancé dans un environnement jetable : l'installer dans le projet aurait ajouté 21 paquets à auditer |
 
-Résultat actuel : **aucune licence copyleft forte, aucune vulnérabilité connue, tous les paquets à leur dernière version stable.**
+Résultat actuel : **uniquement des licences permissives (plus MPL-2.0, justifiée ci-dessous), aucune vulnérabilité connue, tous les paquets à leur dernière version stable.**
 
 ### Plateforme
 
@@ -291,7 +297,7 @@ Une **correction de sécurité** (CVE remontée par `pip-audit`) passe en priori
 
 | Service | Conditions | Risque (J2) | Mitigation |
 |---|---|---|---|
-| iTunes Search API | gratuit, sans clé, ~20 req/min, sans SLA, CGU Apple | **pricing / fin de vie** décidés seuls par Apple. **Souveraineté** : opérateur américain (Cloud Act), mais on n'envoie que le titre du morceau, aucune donnée personnelle. | Adapter isolé, cache + coupe-circuit + quota, repli automatique, retrait possible par configuration |
+| iTunes Search API | gratuit, sans clé, ~20 req/min, sans SLA, CGU Apple | **pricing / fin de vie** décidés seuls par Apple. **CGU** : l'API est destinée à promouvoir le contenu iTunes. **À valider par le juridique avant la mise en production**, comme MusicBrainz. **Souveraineté** : opérateur américain (Cloud Act), mais on n'envoie que le titre du morceau, aucune donnée personnelle. | Adapter isolé, cache + coupe-circuit + quota, repli automatique, retrait possible par configuration |
 | MusicBrainz API | gratuit, `User-Agent` identifiable obligatoire, 1 req/s ; données principales en CC0 | **usage commercial** : MetaBrainz demande aux entreprises de soutenir le projet (plan payant). **À valider par le juridique avant la mise en production.** | Adapter isolé, quota 1 req/s, repli local |
 
 **Données personnelles (RGPD)** : aucun contact utilisateur n'est envoyé aux fournisseurs musicaux. Les faux SDK masquent email, téléphone et jeton push dans les logs (`al***@example.com`, `+336******01`, `devi***`).
@@ -299,6 +305,7 @@ Une **correction de sécurité** (CVE remontée par `pip-audit`) passe en priori
 ## 6. Limites connues
 
 - La pertinence de MusicBrainz est variable : on prend le premier résultat (ex. « Purple Rain » renvoie une reprise peu connue). On pourrait filtrer par score ou par artiste.
+- **Volume** : les quotas des API gratuites (iTunes 20 req/min, MusicBrainz 1 req/s) limitent une tournée lancée d'un coup. Mesuré sur 100 morceaux distincts, les deux API en bonne santé : 20 iTunes, 1 MusicBrainz, **79 sur la liste locale**. Le réveil part toujours, mais rarement avec le bon morceau. C'est acceptable en beta. Avant un lancement à volume, deux options : préchauffer la veille un cache persistant (les requêtes d'un utilisateur se limitent à ses 4 météos et à ses surcharges, connues à l'avance), ou attendre le quota au prix de réveils en retard.
 - Le cache est en mémoire et non borné (`ponytail:` dans `guards.py`). Il est partagé sur une tournée lancée avec `--batch`, mais pas entre deux processus. Passer à un LRU ou à Redis si le volume l'exige.
 - Les canaux de notification sont des mocks qui écrivent dans le log, comme le demande le sujet.
 - L'ordonnancement (déclencher la tournée à la bonne heure) est hors périmètre, comme le précise le sujet.

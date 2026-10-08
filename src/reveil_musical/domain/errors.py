@@ -8,3 +8,7 @@ class NotificationFailed(Exception):
 
 class UnknownUser(Exception):
     pass
+
+
+class QuotaExceeded(ProviderUnavailable):
+    """Refus de notre propre limiteur de débit : le fournisseur, lui, n'est pas en panne."""

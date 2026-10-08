@@ -12,9 +12,14 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
 echo "== 1/4 Licences de tout l'environnement (directes + transitives, runtime + dev)"
-# --partial-match : « GPL » couvre aussi AGPL et LGPL. MPL (copyleft faible, par fichier) est toléré.
-"$VENV/pip-licenses" --with-system --partial-match --fail-on "GPL;SSPL;EUPL" > /dev/null
-echo "OK : aucune licence copyleft forte"
+# Liste BLANCHE : une licence absente, UNKNOWN ou nouvelle bloque jusqu'à vérification humaine.
+# La liste noire reste en garde-fou : « GPL » (--partial-match) couvre aussi AGPL et LGPL, même
+# glissé dans une expression « X OR GPL ». MPL-2.0 (copyleft faible, par fichier) est toléré.
+# Notre propre paquet (LicenseRef-Proprietary) est exclu : pip-licenses le lit comme UNKNOWN.
+"$VENV/pip-licenses" --with-system --partial-match --ignore-packages reveil-musical \
+  --allow-only "MIT;BSD;Apache;Python Software Foundation;PSF-2.0;Mozilla Public License 2.0" \
+  --fail-on "GPL;SSPL;EUPL" > /dev/null
+echo "OK : uniquement des licences permissives (ou MPL-2.0 justifiée)"
 
 echo "== 2/4 Vulnérabilités connues (versions exactes du fichier de verrouillage)"
 "$VENV/pip-audit" --strict --no-deps --disable-pip -r requirements-dev.lock

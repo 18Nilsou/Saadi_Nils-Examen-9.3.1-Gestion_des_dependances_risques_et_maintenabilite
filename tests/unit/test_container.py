@@ -1,6 +1,6 @@
 import pytest
 from dependency_injector import providers
-from fakes import FakeHttp, load_fixture
+from fakes import FakeClock, FakeHttp, load_fixture
 
 from reveil_musical.container import DEFAULTS, Container, create_container
 from reveil_musical.domain.models import Channel, DayOfWeek, Weather
@@ -110,3 +110,32 @@ def test_durations_must_be_finite_and_strictly_positive(variable, value):
     # un timeout à 0 ou négatif ferait échouer toutes les sources en silence
     with pytest.raises(ValueError, match=variable):
         create_container({variable: value})
+
+
+class HealthyHttp:
+    """iTunes et MusicBrainz en parfaite santé : renvoient le morceau demandé."""
+
+    def get_json(self, url, params=None, headers=None):
+        q = params.get("term") or params.get("query")
+        if "itunes" in url:
+            return {"results": [{"trackName": q, "artistName": "A"}]}
+        return {"recordings": [{"title": q, "artist-credit": [{"name": "A"}]}]}
+
+
+def test_a_busy_round_does_not_cut_off_healthy_providers(container):
+    """Régression : sur une tournée chargée, les refus de quota ouvraient les coupe-circuits
+    et 79 % des réveils finissaient sur la liste locale alors que les deux API allaient bien."""
+    clock = FakeClock()
+    container.clock.override(clock)
+    container.http.override(HealthyHttp())
+    chain = container.music_chain()
+    sources = [chain.resolve(f"song {i}")[0].source for i in range(25)]
+    clock.advance(1.1)  # MusicBrainz : 1 req/s, de nouveau disponible
+
+    assert sources[:21] == ["itunes"] * 20 + ["musicbrainz"]
+    assert chain.resolve("song 25")[0].source == "musicbrainz"
+
+
+def test_an_unusable_profile_cache_fails_at_startup(tmp_path):
+    with pytest.raises(ValueError, match="REVEIL_PROFILE_CACHE"):
+        create_container({"REVEIL_PROFILE_CACHE": str(tmp_path / "absent" / "profils.db")})
