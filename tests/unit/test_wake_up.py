@@ -55,7 +55,7 @@ def make(remote=None, sms=None, email=None, log=None):
     senders = {Channel.SMS: sms or FakeSender(), Channel.EMAIL: email or FakeSender()}
     use_case = WakeUpUseCase(
         FakeUsers(),
-        MusicFallbackChain([remote, FakeLocal()]),
+        MusicFallbackChain({"remote": remote, "local": FakeLocal()}),
         NotificationDispatcher(senders, log or FakeSender()),
     )
     return use_case, remote

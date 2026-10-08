@@ -102,3 +102,11 @@ def test_an_empty_provider_list_is_a_configuration_error():
 def test_an_invalid_value_names_the_faulty_variable():
     with pytest.raises(ValueError, match="REVEIL_HTTP_TIMEOUT"):
         create_container({"REVEIL_HTTP_TIMEOUT": "abc"})
+
+
+@pytest.mark.parametrize("variable", ["REVEIL_HTTP_TIMEOUT", "REVEIL_CACHE_TTL"])
+@pytest.mark.parametrize("value", ["0", "-1", "nan", "inf"])
+def test_durations_must_be_finite_and_strictly_positive(variable, value):
+    # un timeout à 0 ou négatif ferait échouer toutes les sources en silence
+    with pytest.raises(ValueError, match=variable):
+        create_container({variable: value})

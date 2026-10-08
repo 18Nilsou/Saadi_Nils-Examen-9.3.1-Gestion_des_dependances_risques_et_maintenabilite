@@ -105,7 +105,7 @@ def test_local_fallback_always_returns_a_track():
 def test_chain_uses_the_first_provider_when_healthy():
     first, second = CountingProvider(), CountingProvider()
 
-    assert MusicFallbackChain([first, second]).resolve("q") == (TRACK, False)
+    assert MusicFallbackChain({"first": first, "second": second}).resolve("q") == (TRACK, False)
     assert second.calls == 0
 
 
@@ -113,20 +113,41 @@ def test_chain_uses_the_first_provider_when_healthy():
 def test_chain_falls_back_on_error_or_empty_result(failing):
     backup = Track("Backup", "B", "musicbrainz")
 
-    assert MusicFallbackChain([failing, CountingProvider(result=backup)]).resolve("q") == (backup, True)
+    assert MusicFallbackChain({"failing": failing, "backup": CountingProvider(result=backup)}).resolve("q") == (backup, True)
 
 
 def test_chain_ends_on_local_list_when_every_remote_is_down():
     chain = MusicFallbackChain(
-        [CountingProvider(error="500"), CountingProvider(error="timeout"), LocalFallbackMusicProvider(DEFAULT_TRACKS)]
+        {
+            "itunes": CountingProvider(error="500"),
+            "musicbrainz": CountingProvider(error="timeout"),
+            "local": LocalFallbackMusicProvider(DEFAULT_TRACKS),
+        }
     )
 
     assert chain.resolve("q") == (DEFAULT_TRACKS[0], True)
 
 
+def test_chain_survives_an_unexpected_bug_in_a_provider(caplog):
+    class Buggy:
+        def find_track(self, query):
+            raise AttributeError("bug dans un adapter")
+
+    local = LocalFallbackMusicProvider(DEFAULT_TRACKS)
+
+    assert MusicFallbackChain({"buggy": Buggy(), "local": local}).resolve("q") == (DEFAULT_TRACKS[0], True)
+    assert "AttributeError" in caplog.text  # trace complète : un bug doit se voir
+
+
+def test_chain_logs_which_provider_failed(caplog):
+    MusicFallbackChain({"itunes": CountingProvider(error="circuit ouvert"), "next": CountingProvider()}).resolve("q")
+
+    assert "itunes" in caplog.text and "circuit ouvert" in caplog.text
+
+
 def test_chain_with_nothing_left_raises():
     with pytest.raises(ProviderUnavailable):
-        MusicFallbackChain([CountingProvider(error="500")]).resolve("q")
+        MusicFallbackChain({"only": CountingProvider(error="500")}).resolve("q")
 
 
 # --- Coupe-circuit ---

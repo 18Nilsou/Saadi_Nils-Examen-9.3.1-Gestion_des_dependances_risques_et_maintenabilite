@@ -78,7 +78,7 @@ def test_a_bad_line_does_not_prevent_the_other_wake_ups(offline, tmp_path, capsy
 
 
 @pytest.mark.parametrize(
-    "variable, value", [("REVEIL_HTTP_TIMEOUT", "abc"), ("REVEIL_MUSIC_PROVIDERS", "spotify"), ("REVEIL_MUSIC_PROVIDERS", "")]
+    "variable, value", [("REVEIL_HTTP_TIMEOUT", "abc"), ("REVEIL_HTTP_TIMEOUT", "0"), ("REVEIL_MUSIC_PROVIDERS", "spotify"), ("REVEIL_MUSIC_PROVIDERS", "")]
 )
 def test_invalid_configuration_stops_cleanly_with_exit_code_1(monkeypatch, caplog, variable, value):
     monkeypatch.setenv(variable, value)

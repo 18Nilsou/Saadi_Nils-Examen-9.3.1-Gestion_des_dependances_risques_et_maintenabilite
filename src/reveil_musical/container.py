@@ -10,6 +10,7 @@ Durées de vie :
 - Factory (transient) : orchestrations applicatives, légères et sans état.
 - Scoped : inutile ici, aucun état « par réveil » à partager.
 """
+import math
 import os
 from collections.abc import Mapping
 
@@ -53,9 +54,9 @@ def _names(order: str) -> list[str]:
     return [name.strip() for name in order.split(",") if name.strip()]
 
 
-def _ordered_providers(order: str, remote: Mapping, local) -> list:
-    """Sources distantes dans l'ordre configuré, la liste locale toujours en dernier."""
-    return [remote[name] for name in _names(order)] + [local]
+def _ordered_providers(order: str, remote: Mapping, local) -> dict:
+    """Sources distantes nommées, dans l'ordre configuré ; la liste locale toujours en dernier."""
+    return {name: remote[name] for name in _names(order)} | {"local": local}
 
 
 class Container(containers.DeclarativeContainer):
@@ -139,9 +140,13 @@ def _read_config(env: Mapping[str, str]) -> dict:
         variable = f"REVEIL_{key.upper()}"
         raw = env.get(variable, default)
         try:
-            config[key] = type(default)(raw)
+            value = type(default)(raw)
         except ValueError:
             raise ValueError(f"{variable} : valeur invalide {raw!r} (attendu : {type(default).__name__})") from None
+        # Durées : un timeout à 0, négatif ou nan ferait échouer toutes les sources en silence.
+        if isinstance(value, float) and not (math.isfinite(value) and value > 0):
+            raise ValueError(f"{variable} : valeur invalide {raw!r} (attendu : durée finie strictement positive)")
+        config[key] = value
     return config
 
 
