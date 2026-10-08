@@ -13,14 +13,23 @@ def modules(layer: str) -> list[Path]:
     return sorted((SRC / layer).rglob("*.py"))
 
 
-def imports_of(source: str) -> set[str]:
-    """Modules importés en absolu ('reveil_musical.x', 'json'…) ; les imports relatifs sont préfixés par '.'."""
+def package_of(path: Path) -> str:
+    return ".".join(path.relative_to(SRC.parent).parent.parts)
+
+
+def imports_of(source: str, package: str | None = None) -> set[str]:
+    """Modules importés. Sans `package`, les imports relatifs restent préfixés par '.' ;
+    avec `package`, ils sont résolus en absolu (ex. '...application' -> 'reveil_musical.application')."""
     found = set()
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Import):
             found |= {alias.name for alias in node.names}
         elif isinstance(node, ast.ImportFrom):
-            found.add("." * node.level + (node.module or ""))
+            if node.level and package:
+                base = package.split(".")[: len(package.split(".")) - node.level + 1]
+                found.add(".".join(base + ([node.module] if node.module else [])))
+            else:
+                found.add("." * node.level + (node.module or ""))
     return found
 
 
@@ -34,17 +43,25 @@ def infrastructure_classes() -> set[str]:
 
 
 def instantiations(source: str, class_names: set[str]) -> set[str]:
-    return {
-        node.func.id
+    """Appels `Classe(...)` ou `module.Classe(...)` d'une des classes données."""
+    called = {
+        node.func.id if isinstance(node.func, ast.Name) else node.func.attr
         for node in ast.walk(ast.parse(source))
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in class_names
+        if isinstance(node, ast.Call) and isinstance(node.func, (ast.Name, ast.Attribute))
     }
+    return called & class_names
 
 
 def test_detectors_catch_a_violation():
     bad = "import json\nfrom reveil_musical.infrastructure.http import JsonHttpClient\nJsonHttpClient(1)"
     assert {"json", "reveil_musical.infrastructure.http"} <= imports_of(bad)
     assert instantiations(bad, {"JsonHttpClient"}) == {"JsonHttpClient"}
+
+
+def test_detectors_catch_qualified_instantiation_and_resolve_relative_imports():
+    assert instantiations("from .. import http\nhttp.JsonHttpClient(1)", {"JsonHttpClient"}) == {"JsonHttpClient"}
+    relative = "from ...application.notifier import NotificationDispatcher"
+    assert "reveil_musical.application.notifier" in imports_of(relative, "reveil_musical.infrastructure.music")
 
 
 @pytest.mark.parametrize("path", modules("domain"), ids=lambda p: p.name)
@@ -61,6 +78,12 @@ def test_application_never_reaches_infrastructure(path):
     for name in imports_of(path.read_text()):
         assert "infrastructure" not in name and "container" not in name, f"{path.name} importe {name}"
         assert name.split(".")[0] not in TECHNICAL - {"logging"}, f"{path.name} importe {name}"
+
+
+@pytest.mark.parametrize("path", modules("infrastructure"), ids=lambda p: str(p.relative_to(SRC)))
+def test_infrastructure_depends_on_the_domain_never_on_application_or_container(path):
+    for name in imports_of(path.read_text(), package_of(path)):
+        assert not name.startswith(("reveil_musical.application", "reveil_musical.container")), f"{path.name} importe {name}"
 
 
 @pytest.mark.parametrize(
