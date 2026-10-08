@@ -45,3 +45,28 @@ def test_env_variables_override_defaults():
 
     assert c.config.itunes_url() == "http://itunes.local"
     assert c.config.http_timeout() == 1.5
+
+
+def urls_called(env, http):
+    c = create_container(env)
+    c.http.override(http)
+    result = c.wake_up_use_case().execute("u1", DayOfWeek.LUNDI, Weather.SOLEIL)
+    return [call["url"].split("/")[2] for call in http.calls], result
+
+
+def test_provider_order_comes_from_configuration():
+    hosts, result = urls_called({"REVEIL_MUSIC_PROVIDERS": "musicbrainz,itunes"}, FakeHttp(error="down"))
+
+    assert hosts == ["musicbrainz.org", "itunes.apple.com"]
+    assert result.track.source == "local"  # la liste locale reste toujours en dernier
+
+
+def test_a_provider_can_be_removed_without_touching_the_code():
+    hosts, _ = urls_called({"REVEIL_MUSIC_PROVIDERS": "musicbrainz"}, FakeHttp(error="down"))
+
+    assert hosts == ["musicbrainz.org"]
+
+
+def test_unknown_provider_name_fails_at_startup_not_at_wake_up_time():
+    with pytest.raises(ValueError, match="spotify"):
+        create_container({"REVEIL_MUSIC_PROVIDERS": "itunes,spotify"})

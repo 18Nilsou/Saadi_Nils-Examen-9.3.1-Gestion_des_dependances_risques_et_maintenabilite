@@ -1,5 +1,6 @@
 """Composition root : le SEUL endroit qui connaît les classes concrètes et les assemble.
-Changer de fournisseur ou de canal = modifier ce fichier, rien d'autre.
+Choisir/réordonner les sources musicales = variable REVEIL_MUSIC_PROVIDERS, sans toucher au code.
+Ajouter une nouvelle source ou un nouveau canal = un adapter + une ligne ici, rien d'autre.
 
 Durées de vie :
 - Singleton : composants sans état par réveil, ou dont l'état DOIT être partagé
@@ -35,11 +36,21 @@ from .infrastructure.users.in_memory import DEMO_PROFILES, InMemoryUserPreferenc
 # Dépendances implicites documentées : chaque clé est surchargeable par REVEIL_<CLE>.
 DEFAULTS = {
     "itunes_url": "https://itunes.apple.com",
+    "music_providers": "itunes,musicbrainz",
     "musicbrainz_url": "https://musicbrainz.org",
     "musicbrainz_user_agent": "ReveilMusical/0.1 (nils.saadi@gmail.com)",
     "http_timeout": 3.0,
     "cache_ttl": 86400.0,
 }
+
+
+def _names(order: str) -> list[str]:
+    return [name.strip() for name in order.split(",") if name.strip()]
+
+
+def _ordered_providers(order: str, remote: Mapping, local) -> list:
+    """Sources distantes dans l'ordre configuré, la liste locale toujours en dernier."""
+    return [remote[name] for name in _names(order)] + [local]
 
 
 class Container(containers.DeclarativeContainer):
@@ -80,8 +91,11 @@ class Container(containers.DeclarativeContainer):
     )
     local_music = providers.Singleton(LocalFallbackMusicProvider, tracks=providers.Object(DEFAULT_TRACKS))
 
+    # Sources distantes interchangeables : leur ordre vient de REVEIL_MUSIC_PROVIDERS.
+    remote_music = providers.Dict(itunes=itunes, musicbrainz=musicbrainz)
     music_chain = providers.Factory(
-        MusicFallbackChain, providers=providers.List(itunes, musicbrainz, local_music)
+        MusicFallbackChain,
+        providers=providers.Callable(_ordered_providers, config.music_providers, remote_music, local_music),
     )
 
     # --- Notifications : un faux SDK + son adapter par canal ---
@@ -107,4 +121,7 @@ def create_container(env: Mapping[str, str] = os.environ) -> Container:
     container.config.from_dict(
         {key: type(default)(env.get(f"REVEIL_{key.upper()}", default)) for key, default in DEFAULTS.items()}
     )
+    unknown = set(_names(container.config.music_providers())) - set(container.remote_music.kwargs)
+    if unknown:  # échouer au démarrage plutôt qu'à l'heure du réveil
+        raise ValueError(f"REVEIL_MUSIC_PROVIDERS : fournisseur(s) inconnu(s) {sorted(unknown)}")
     return container
