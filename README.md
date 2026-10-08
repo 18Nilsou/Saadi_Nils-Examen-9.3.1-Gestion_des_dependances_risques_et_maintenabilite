@@ -16,6 +16,8 @@ python3.13 -m venv .venv
 scripts/audit.sh                      # licences, vulnérabilités, fraîcheur, SBOM (bloquant si copyleft ou CVE)
 ```
 
+Les tests et l'audit tournent aussi en **CI** (`.github/workflows/ci.yml`) à chaque push et à chaque PR : un changement qui casse une règle de couche, un contrat, une licence ou fait apparaître une CVE est refusé.
+
 ---
 
 ## 1. Des exigences métier aux choix techniques
@@ -25,7 +27,7 @@ scripts/audit.sh                      # licences, vulnérabilités, fraîcheur, 
 | Changer **vite** de fournisseur musical | Port `MusicProvider` + un **Adapter** par source. Choix et ordre des sources par la variable **`REVEIL_MUSIC_PROVIDERS`**, sans toucher au code. |
 | Plusieurs **canaux** de notification, d'autres à venir | Port `NotificationSender` + un **Adapter** par SDK (3 faux SDK aux signatures différentes). `NotificationDispatcher` (**Strategy**) choisit selon le profil. |
 | **Aucune** dépendance sans contrôle licence / fraîcheur | Une seule dépendance runtime. **`scripts/audit.sh`** rend le contrôle rejouable et bloquant. SBOM CycloneDX (`sbom.cdx.json`) + tableau complet (§5). Versions épinglées. |
-| **Jamais** de silence | Musique : **cache → coupe-circuit → quota** devant chaque source, puis **chaîne de repli** iTunes → MusicBrainz → liste locale, **quelle que soit l'exception** d'une source (bug d'adapter compris). Canal : préféré → autres canaux de l'utilisateur → log de dernier recours, **quelle que soit l'exception** du canal. Service utilisateurs injoignable → **dernier profil connu**. Panne non rattrapable → log `CRITICAL` + code de sortie ≠ 0. |
+| **Jamais** de silence | Musique : **cache → coupe-circuit → quota** devant chaque source, puis **chaîne de repli** iTunes → MusicBrainz → liste locale, **quelle que soit l'exception** d'une source (bug d'adapter compris). Canal : préféré → autres canaux de l'utilisateur → log de dernier recours, **quelle que soit l'exception** du canal ; ce log ne réveille personne, il est donc compté comme **réveil non livré** (`CRITICAL` + code 1) pour que l'ordonnanceur alerte. Service utilisateurs injoignable → **dernier profil connu**. Panne non rattrapable → log `CRITICAL` + code de sortie ≠ 0. |
 | Morceau selon le **jour** et la **météo** | Le service utilisateur fournit un morceau par météo + un morceau de secours. Le profil accepte en plus une **surcharge facultative (jour, météo)** : (jour, météo) → météo → secours. |
 
 ## 2. Architecture
@@ -73,7 +75,7 @@ flowchart LR
 - **Fan-in** maximal : `domain/`, dont dépendent 7 des 8 autres groupes de modules. C'est la partie la plus stable, celle qu'il faut changer le moins.
 - **Une seule** entrée vers le réseau (`infrastructure/http.py`) et **une seule** vers un package externe (`container.py`) : chacune est remplaçable en un point.
 
-Les dépendances vont toujours vers le domaine. Règles vérifiées à chaque exécution des tests (`tests/architecture/test_layers.py`) :
+Les dépendances vont toujours vers le domaine. Règles vérifiées à chaque exécution des tests, donc à chaque push par la CI (`tests/architecture/test_layers.py`) :
 - `domain/` n'importe que `collections`, `dataclasses`, `enum`, `typing` ;
 - `application/` n'importe ni `infrastructure`, ni le conteneur, ni un module réseau/JSON ;
 - `infrastructure/` n'importe ni `application`, ni le conteneur (imports relatifs résolus) ;
@@ -99,14 +101,14 @@ Les dépendances vont toujours vers le domaine. Règles vérifiées à chaque ex
 ### Résilience
 
 ```
-morceau :  [cache → coupe-circuit → quota → iTunes] ──(panne / circuit ouvert / quota / rien trouvé / bug)──►
+morceau :  [cache → coupe-circuit → quota → iTunes] ──(panne / circuit ouvert / quota / requête refusée / rien trouvé / bug)──►
            [cache → coupe-circuit → quota → MusicBrainz] ──► liste locale (renvoie toujours un morceau)
-canal   :  canal préféré ──(n'importe quelle exception)──► autres canaux de l'utilisateur ──► LogNotificationSender
+canal   :  canal préféré ──(n'importe quelle exception)──► autres canaux de l'utilisateur ──► LogNotificationSender (= non livré, code 1)
 profil  :  service utilisateurs ──(n'importe quelle exception sauf « inconnu »)──► dernier profil connu
 ```
 - **Sources nommées** (`itunes`, `musicbrainz`, `local`) : le journal dit quelle source est en panne (`fournisseur itunes indisponible : circuit ouvert`). Un bug d'adapter est tracé avec sa trace complète, puis la chaîne passe à la source suivante.
 - **Quota** (iTunes 20 req/min, MusicBrainz 1 req/s) : dépassé → `QuotaExceeded` (une `ProviderUnavailable`) immédiat, on **bascule au lieu d'attendre**.
-- **Coupe-circuit** (J1 : SPOF) : après 3 échecs consécutifs, la source n'est plus appelée pendant 60 s, donc on n'attend plus le timeout réseau (3 s) à chaque réveil. Ensuite, un seul appel d'essai : succès → fermé, échec → ré-ouvert. Un refus de **notre** quota n'est **pas** compté comme une panne : avant cette correction, trois refus coupaient 60 s une source saine (MusicBrainz, qui n'accepte qu'1 req/s, était coupé dès la 4ᵉ requête d'une tournée).
+- **Coupe-circuit** (J1 : SPOF) : après 3 échecs consécutifs, la source n'est plus appelée pendant 60 s, donc on n'attend plus le timeout réseau (3 s) à chaque réveil. Ensuite, un seul appel d'essai : succès → fermé, échec → ré-ouvert. Un refus de **notre** quota n'est **pas** compté comme une panne : avant cette correction, trois refus coupaient 60 s une source saine (MusicBrainz, qui n'accepte qu'1 req/s, était coupé dès la 4ᵉ requête d'une tournée). De même, un **HTTP 4xx** (hors 403 et 429) vise *notre* requête, pas le fournisseur : il devient `QueryRejected` (une `ProviderUnavailable`), la chaîne passe à la source suivante, mais le coupe-circuit ne le compte pas. Sans cela, trois titres exotiques d'affilée coupaient 60 s une source saine pour tous les utilisateurs. Le 403 (bridage iTunes) et le 429 restent des pannes.
 - **Cache** placé devant : une requête connue ne consomme ni quota ni appel réseau. Les « non trouvé » sont mis en cache, les pannes non.
 - **Dernier profil connu** (J1 : SPOF du service utilisateurs) : chaque profil lu est mémorisé. Si le service tombe, le réveil part avec le profil mémorisé (tracé en `WARNING`). Un utilisateur **inconnu** n'est jamais masqué, et son profil mémorisé est effacé. Un échec d'écriture du mémo n'empêche jamais le réveil. Pour que le mémo survive d'une tournée à l'autre, `REVEIL_PROFILE_CACHE` doit désigner un fichier.
 - **Concurrence** : l'état du cache, du quota et du coupe-circuit est protégé par un verrou (jamais pendant l'appel réseau), et tous les singletons sont des `ThreadSafeSingleton`. Un test reproduit la course : sans verrou, 50 réveils simultanés font 50 appels au lieu de 20.
@@ -115,9 +117,9 @@ profil  :  service utilisateurs ──(n'importe quelle exception sauf « inconn
 
   | Code | Signification |
   |---|---|
-  | 0 | tous les réveils envoyés (éventuellement en mode dégradé) |
+  | 0 | tous les réveils envoyés sur un vrai canal (éventuellement en mode dégradé : autre source ou autre canal) |
   | 2 | utilisateur inconnu, ou arguments invalides |
-  | 1 | **réveil non livré** : panne non rattrapable (ex. service utilisateurs injoignable **sans profil mémorisé**, tracée en `CRITICAL « RÉVEIL NON LIVRÉ »`), configuration invalide, lot vide ou illisible, ligne de lot invalide |
+  | 1 | **réveil non livré** : panne non rattrapable (ex. service utilisateurs injoignable **sans profil mémorisé**, ou **aucun canal joignable**, le réveil n'atterrissant que dans le log de dernier recours ; tracée en `CRITICAL « RÉVEIL NON LIVRÉ »`), configuration invalide, lot vide ou illisible, ligne de lot invalide |
 
   Pour un lot, le code est celui du problème **le plus grave** (1 > 2 > 0) : une ligne invalide n'est pas masquée par un utilisateur inconnu.
 
@@ -162,8 +164,8 @@ REVEIL_ITUNES_URL=http://127.0.0.1:9 REVEIL_MUSICBRAINZ_URL=http://127.0.0.1:9 \
 
 | Dossier | Ce qui est garanti |
 |---|---|
-| `tests/unit/` | règles du domaine (surcharge jour, secours, invariant `Track`) ; use case avec fakes (nominal, panne musique → local, panne canal → autre canal, panne totale → dernier recours) ; cache, quota, coupe-circuit (un refus de quota ne l'ouvre jamais, y compris sur une tournée chargée), chaîne de repli (y compris bug imprévu d'un adapter, sources nommées dans le journal), concurrence ; dernier profil connu (panne, utilisateur supprimé, écriture impossible, persistance entre deux tournées) ; dispatcher (y compris exception imprévue d'un SDK) ; adapters de notification (signatures hétérogènes, HTML échappé dans l'email, SMS ≤ 160 car., contacts masqués) ; conteneur (sélection par config, durées validées, coupe-circuit câblé, durées de vie, dépendance captive, singletons thread-safe) ; CLI (codes de sortie, lot, casse) |
-| `tests/contract/` | **contrats par abstraction** : la même suite pour les 6 implémentations de `MusicProvider` et les 4 de `NotificationSender`. Elle est vérifiée par mutation : un adapter qui renvoie le JSON brut fait échouer le contrat. S'y ajoutent les adapters iTunes / MusicBrainz contre des **réponses réelles enregistrées** (`tests/fixtures/`), et `JsonHttpClient` contre un serveur HTTP **local** (200, 500, HTML, timeout, hôte injoignable). |
+| `tests/unit/` | règles du domaine (surcharge jour, secours, invariant `Track`) ; use case avec fakes (nominal, panne musique → local, panne canal → autre canal, panne totale → dernier recours) ; cache, quota, coupe-circuit (ni un refus de quota ni une requête refusée en 4xx ne l'ouvrent, y compris sur une tournée chargée), chaîne de repli (y compris bug imprévu d'un adapter, sources nommées dans le journal), concurrence ; dernier profil connu (panne, utilisateur supprimé, écriture impossible, persistance entre deux tournées) ; dispatcher (y compris exception imprévue d'un SDK) ; adapters de notification (signatures hétérogènes, HTML échappé dans l'email, SMS ≤ 160 car., contacts masqués) ; conteneur (sélection par config, durées validées, coupe-circuit câblé, durées de vie, dépendance captive, singletons thread-safe) ; CLI (codes de sortie, dont « tous les canaux en panne » → 1, lot, casse) |
+| `tests/contract/` | **contrats par abstraction** : la même suite pour les 6 implémentations de `MusicProvider` et les 4 de `NotificationSender`. Elle est vérifiée par mutation : un adapter qui renvoie le JSON brut fait échouer le contrat. S'y ajoutent les adapters iTunes / MusicBrainz contre des **réponses réelles enregistrées** (`tests/fixtures/`), et `JsonHttpClient` contre un serveur HTTP **local** (200, 400 → requête refusée, 403 / 429 / 500 → panne, HTML, timeout, hôte injoignable). |
 | `tests/architecture/` | règles de couches et « pas de `new` » (§2) |
 | `tests/e2e/` | vraies API iTunes et MusicBrainz, et CLI complète. Marqueur `e2e`, exclu par défaut. |
 
@@ -199,7 +201,7 @@ Seams utilisés : les ports du domaine ; `JsonHttpClient` (remplacé par `FakeHt
 
 ## 5. SBOM & audit (au 2026-10-08)
 
-`scripts/audit.sh` fait de l'exigence légale un contrôle **rejouable**, à lancer avant chaque ajout ou mise à jour de dépendance :
+`scripts/audit.sh` fait de l'exigence légale un contrôle **rejouable**, à lancer avant chaque ajout ou mise à jour de dépendance, et lancé par la CI à chaque push :
 
 | Étape | Outil | Effet |
 |---|---|---|

@@ -99,3 +99,19 @@
 3. Lot avec une ligne corrompue → T6.
 4. Réponse fournisseur syntaxiquement valide mais vide de sens (`null`) → T1.
 5. Variable d'env erronée (`REVEIL_MUSIC_PROVIDERS=spotify`) → T3.
+
+---
+
+# Revue CTO / Lead Tech — 2026-10-08 (seconde passe)
+
+| # | Constat | Correction | Test de régression (rouge sans le correctif, vérifié par mutation) |
+|---|---|---|---|
+| R1 | Tous les canaux en panne → réveil seulement écrit dans le log → **code 0** : un silence compté comme un succès. | `__main__._wake` : `Channel.LOG` → `CRITICAL « RÉVEIL NON LIVRÉ »` + code 1. | `test_cli.py::test_every_channel_down_is_not_a_delivered_wake_up` |
+| R2 | Tout HTTP 4xx comptait comme panne : 3 titres exotiques d'affilée ouvraient 60 s le coupe-circuit d'une source saine. | `QueryRejected` (domaine) levée par `http.py` sur 4xx hors 403/429 ; ignorée par le coupe-circuit, comme `QuotaExceeded`. | `test_http_client.py::test_a_4xx_rejects_the_query_not_the_provider`, `test_throttling_and_5xx_remain_outages`, `test_music_resilience.py::test_rejected_queries_never_open_the_circuit_of_a_healthy_provider` |
+| R3 | Aucune CI : garde-fous d'architecture et audit lancés « si on y pense ». | `.github/workflows/ci.yml` : `pytest` + `scripts/audit.sh` à chaque push / PR. | — |
+
+**Reste ouvert (non bloquant)** :
+- SMS : le « — » du message force l'encodage UCS-2 (70 car./segment), soit 3 SMS facturés au lieu d'1.
+- Le mémo des profils est stocké en pickle de `UserProfile` : un champ ajouté au modèle rend les anciens profils inutilisables.
+- `audit.sh` : `--partial-match` laisse passer « Apache-2.0 WITH Commons-Clause » ; SBOM sans identifiant SPDX ni empreintes ; `setuptools` (build) non épinglé.
+- Mode lot séquentiel sans échéance globale.
