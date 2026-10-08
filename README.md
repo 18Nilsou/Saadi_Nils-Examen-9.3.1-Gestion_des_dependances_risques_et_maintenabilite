@@ -1,4 +1,4 @@
-# Réveil musical
+# Réveil musical - Nils SAADI - INFRES 17 DL - IMT MINES ALES
 
 Chaque utilisateur est réveillé avec un morceau choisi selon **le jour** et **la météo**, puis prévenu sur **son canal préféré** (email, SMS, push).
 Le TP porte sur l'appel déclenché à l'heure du réveil : `WakeUpUseCase.execute(user_id, jour, météo)`.
