@@ -13,7 +13,7 @@ import logging
 
 from .container import Container, create_container
 from .domain.errors import UnknownUser
-from .domain.models import DayOfWeek, Weather
+from .domain.models import Channel, DayOfWeek, Weather
 
 _log = logging.getLogger("reveil_musical")
 
@@ -35,8 +35,9 @@ def meteo(text: str) -> Weather:
 
 
 def _wake(container: Container, user_id: str, day: DayOfWeek, weather: Weather) -> int:
-    """Un réveil. Une panne non rattrapable (ex. service utilisateurs injoignable) est tracée
-    en CRITICAL pour que l'ordonnanceur alerte."""
+    """Un réveil. Une panne non rattrapable (ex. service utilisateurs injoignable, ou aucun canal
+    joignable : le log de dernier recours ne réveille personne) est tracée en CRITICAL pour que
+    l'ordonnanceur alerte."""
     try:
         result = container.wake_up_use_case().execute(user_id, day, weather)
     except UnknownUser:
@@ -44,6 +45,9 @@ def _wake(container: Container, user_id: str, day: DayOfWeek, weather: Weather) 
         return UNKNOWN_USER
     except Exception:
         _log.critical("RÉVEIL NON LIVRÉ pour %s (%s, %s)", user_id, day, weather, exc_info=True)
+        return NOT_DELIVERED
+    if result.channel is Channel.LOG:  # tous les canaux ont échoué : l'utilisateur dort encore
+        _log.critical("RÉVEIL NON LIVRÉ pour %s : aucun canal n'a abouti, réveil seulement tracé", user_id)
         return NOT_DELIVERED
     print(
         f"Réveil envoyé via {result.channel} : {result.track.title} — {result.track.artist} "

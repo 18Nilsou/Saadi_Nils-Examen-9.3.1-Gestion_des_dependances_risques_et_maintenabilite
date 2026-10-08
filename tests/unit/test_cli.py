@@ -41,6 +41,20 @@ def test_user_service_outage_is_logged_as_critical_and_exit_code_1(offline, capl
     assert critical and "u1" in critical[0].getMessage()
 
 
+def test_every_channel_down_is_not_a_delivered_wake_up(offline, caplog):
+    """Régression : le log de dernier recours ne réveille personne, il ne doit pas valoir 0."""
+    class DownSender:
+        def send(self, contact, message):
+            raise RuntimeError("canal en panne")
+
+    for channel in (offline.email, offline.sms, offline.push):
+        channel.override(DownSender())
+
+    assert main(["u1", "LUNDI", "SOLEIL"], offline) == 1
+    critical = [r for r in caplog.records if r.levelno == logging.CRITICAL]
+    assert critical and "u1" in critical[0].getMessage()
+
+
 def test_day_and_weather_are_case_insensitive(offline):
     assert main(["u1", "lundi", "Soleil"], offline) == 0
 
