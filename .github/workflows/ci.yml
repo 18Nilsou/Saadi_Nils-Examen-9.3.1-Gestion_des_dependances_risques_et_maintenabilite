@@ -5,15 +5,17 @@ on: [push, pull_request]
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # épinglé : rien ne change sans décision, comme les paquets
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
       - name: Installation (versions épinglées du lock)
         run: python -m venv .venv && .venv/bin/pip install -r requirements-dev.lock && .venv/bin/pip install -e . --no-deps
       - name: Tests unitaires, contrats, architecture (couverture >= 90 %)
         run: .venv/bin/pytest
+      - name: Auto-test de l'audit des licences (licences piégées)
+        run: scripts/audit_selftest.sh
       - name: Audit licences, vulnérabilités, fraîcheur, SBOM
         run: PYTHON=python scripts/audit.sh
