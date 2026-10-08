@@ -5,7 +5,8 @@ from reveil_musical.infrastructure.users.last_known import (
 )
 
 from reveil_musical.domain.errors import UnknownUser
-from reveil_musical.domain.models import Channel, Weather
+from reveil_musical.domain.models import Channel, DayOfWeek, UserProfile, Weather
+from reveil_musical.domain.rules import select_track_query
 from reveil_musical.infrastructure.users.in_memory import DEMO_PROFILES, InMemoryUserPreferencesRepository
 
 
@@ -80,3 +81,37 @@ def test_the_file_store_survives_from_one_round_to_the_next(tmp_path):
     inner.down = True  # tournée suivante, nouveau processus, service en panne
 
     assert LastKnownUserPreferencesRepository(inner, open_profile_store(path)).get("u1").user_id == "u1"
+
+
+_ABSENT = object()
+
+
+def stored_with(profile, **changes):
+    """Profil tel que pickle le restaure : sans passer par __init__, donc avec le schéma d'alors."""
+    old = object.__new__(UserProfile)
+    old.__dict__.update({k: v for k, v in {**vars(profile), **changes}.items() if v is not _ABSENT})
+    return old
+
+
+
+def down_repo(store):
+    inner = FlakyUsers()
+    inner.down = True
+    return LastKnownUserPreferencesRepository(inner, store)
+
+
+def test_a_profile_stored_before_a_field_was_added_is_still_usable():
+    """Régression : pickle contourne __init__ ; un profil mémorisé avant l'ajout de tracks_by_day
+    n'avait pas l'attribut et le réveil plantait pendant la panne du service utilisateurs."""
+    profile = down_repo({"u2": stored_with(DEMO_PROFILES[1], tracks_by_day=_ABSENT)}).get("u2")
+
+    assert select_track_query(profile, DayOfWeek.LUNDI, Weather.PLUIE) == "Purple Rain"
+
+
+def test_a_profile_stored_with_a_field_since_removed_is_still_usable():
+    assert down_repo({"u2": stored_with(DEMO_PROFILES[1], legacy="x")}).get("u2").user_id == "u2"
+
+
+def test_an_incompatible_stored_profile_is_treated_as_absent():
+    with pytest.raises(ConnectionError):
+        down_repo({"u2": stored_with(DEMO_PROFILES[1], preferred_channel=_ABSENT)}).get("u2")
