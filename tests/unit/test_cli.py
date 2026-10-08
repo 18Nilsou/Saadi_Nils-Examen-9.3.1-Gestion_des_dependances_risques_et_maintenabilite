@@ -1,7 +1,7 @@
 import logging
 
 import pytest
-from fakes import FakeHttp
+from fakes import FakeHttp, load_fixture
 
 from reveil_musical.__main__ import main
 from reveil_musical.container import create_container
@@ -39,3 +39,39 @@ def test_user_service_outage_is_logged_as_critical_and_exit_code_1(offline, capl
     assert main(["u1", "LUNDI", "SOLEIL"], offline) == 1
     critical = [r for r in caplog.records if r.levelno == logging.CRITICAL]
     assert critical and "u1" in critical[0].getMessage()
+
+
+def test_day_and_weather_are_case_insensitive(offline):
+    assert main(["u1", "lundi", "Soleil"], offline) == 0
+
+
+def test_without_arguments_the_cli_explains_its_usage():
+    with pytest.raises(SystemExit):
+        main([])
+
+
+def write_batch(tmp_path, *lines):
+    path = tmp_path / "reveils.csv"
+    path.write_text("\n".join(lines) + "\n")
+    return str(path)
+
+
+def test_batch_shares_the_cache_so_the_quota_is_really_respected(tmp_path, capsys):
+    container = create_container({})
+    http = FakeHttp(load_fixture("itunes_search.json"))
+    container.http.override(http)
+    batch = write_batch(tmp_path, "# user,jour,meteo", "u3,LUNDI,SOLEIL", "u3,MARDI,PLUIE", "", "u3,MERCREDI,NEIGE")
+
+    assert main(["--batch", batch], container) == 0
+
+    assert capsys.readouterr().out.count("Réveil envoyé") == 3
+    assert len(http.calls) == 1  # même morceau : un seul appel réseau pour toute la tournée
+
+
+def test_a_bad_line_does_not_prevent_the_other_wake_ups(offline, tmp_path, capsys, caplog):
+    batch = write_batch(tmp_path, "u1,LUNDI,SOLEIL", "u1,FERIE,SOLEIL", "u2,MARDI,PLUIE")
+
+    assert main(["--batch", batch], offline) == 1
+
+    assert capsys.readouterr().out.count("Réveil envoyé") == 2
+    assert "ligne 2" in caplog.text
