@@ -133,12 +133,26 @@ class Container(containers.DeclarativeContainer):
     wake_up_use_case = providers.Factory(WakeUpUseCase, users=users, music=music_chain, notifier=notifier)
 
 
+def _read_config(env: Mapping[str, str]) -> dict:
+    config = {}
+    for key, default in DEFAULTS.items():
+        variable = f"REVEIL_{key.upper()}"
+        raw = env.get(variable, default)
+        try:
+            config[key] = type(default)(raw)
+        except ValueError:
+            raise ValueError(f"{variable} : valeur invalide {raw!r} (attendu : {type(default).__name__})") from None
+    return config
+
+
 def create_container(env: Mapping[str, str] = os.environ) -> Container:
+    """Toute erreur de configuration lève ValueError au démarrage, jamais à l'heure du réveil."""
     container = Container()
-    container.config.from_dict(
-        {key: type(default)(env.get(f"REVEIL_{key.upper()}", default)) for key, default in DEFAULTS.items()}
-    )
-    unknown = set(_names(container.config.music_providers())) - set(container.remote_music.kwargs)
-    if unknown:  # échouer au démarrage plutôt qu'à l'heure du réveil
+    container.config.from_dict(_read_config(env))
+    names = _names(container.config.music_providers())
+    if not names:
+        raise ValueError("REVEIL_MUSIC_PROVIDERS : au moins un fournisseur distant est requis")
+    unknown = set(names) - set(container.remote_music.kwargs)
+    if unknown:
         raise ValueError(f"REVEIL_MUSIC_PROVIDERS : fournisseur(s) inconnu(s) {sorted(unknown)}")
     return container

@@ -73,8 +73,16 @@ canal   :  canal préféré ──(n'importe quelle exception)──► autres c
 - **Coupe-circuit** (J1 : SPOF) : après 3 échecs consécutifs, la source n'est plus appelée pendant 60 s, donc on n'attend plus le timeout réseau (3 s) à chaque réveil. Ensuite, un seul appel d'essai : succès → fermé, échec → ré-ouvert.
 - **Cache** placé devant : une requête connue ne consomme ni quota ni appel réseau. Les « non trouvé » sont mis en cache, les pannes non.
 - **Concurrence** : l'état du cache, du quota et du coupe-circuit est protégé par un verrou (jamais pendant l'appel réseau), et tous les singletons sont des `ThreadSafeSingleton`. Un test reproduit la course : sans verrou, 50 réveils simultanés font 50 appels au lieu de 20.
-- **Mode lot (`--batch`)** : cache, quota et coupe-circuit vivent dans le processus. Lancer un processus par réveil les remettrait à zéro à chaque fois. L'ordonnanceur doit donc lancer la tournée **dans un seul processus** : `--batch fichier.csv` (une ligne `user,jour,meteo`). Une ligne invalide est tracée et n'empêche pas les suivantes.
-- **Codes de sortie** : 0 envoyé ; 2 utilisateur inconnu ; 1 panne non rattrapable (ex. service utilisateurs injoignable), tracée en `CRITICAL « RÉVEIL NON LIVRÉ »` pour que l'ordonnanceur alerte.
+- **Mode lot (`--batch`)** : cache, quota et coupe-circuit vivent dans le processus. Lancer un processus par réveil les remettrait à zéro à chaque fois. L'ordonnanceur doit donc lancer la tournée **dans un seul processus** : `--batch fichier.csv` (une ligne `user,jour,meteo`). Une ligne invalide est tracée et n'empêche pas les suivantes. Un lot vide ou illisible est une erreur, pas un succès silencieux.
+- **Codes de sortie** (lus par l'ordonnanceur ; aucune erreur Python brute, toujours un message clair) :
+
+  | Code | Signification |
+  |---|---|
+  | 0 | tous les réveils envoyés (éventuellement en mode dégradé) |
+  | 2 | utilisateur inconnu, ou arguments invalides |
+  | 1 | **réveil non livré** : panne non rattrapable (ex. service utilisateurs injoignable, tracée en `CRITICAL « RÉVEIL NON LIVRÉ »`), configuration invalide, lot vide ou illisible, ligne de lot invalide |
+
+  Pour un lot, le code est celui du problème **le plus grave** (1 > 2 > 0) : une ligne invalide n'est pas masquée par un utilisateur inconnu.
 
 ### IoC / DI et durées de vie (`container.py`)
 
@@ -88,9 +96,11 @@ canal   :  canal préféré ──(n'importe quelle exception)──► autres c
 
 ### Configuration (dépendances implicites, rendues explicites et documentées)
 
+Toute valeur invalide arrête le programme **au démarrage**, en nommant la variable fautive (ex. `REVEIL_HTTP_TIMEOUT : valeur invalide 'abc'`).
+
 | Variable | Défaut | Rôle |
 |---|---|---|
-| `REVEIL_MUSIC_PROVIDERS` | `itunes,musicbrainz` | sources distantes et leur ordre. La liste locale est toujours ajoutée en dernier. Un nom inconnu fait **échouer le démarrage**, pas le réveil. |
+| `REVEIL_MUSIC_PROVIDERS` | `itunes,musicbrainz` | sources distantes et leur ordre. La liste locale est toujours ajoutée en dernier. Un nom inconnu ou une liste vide fait **échouer le démarrage**, pas le réveil. |
 | `REVEIL_ITUNES_URL` | `https://itunes.apple.com` | |
 | `REVEIL_MUSICBRAINZ_URL` | `https://musicbrainz.org` | |
 | `REVEIL_MUSICBRAINZ_USER_AGENT` | `ReveilMusical/0.1 ( <URL du dépôt> )` | exigé par MusicBrainz ; une URL plutôt qu'un email personnel |

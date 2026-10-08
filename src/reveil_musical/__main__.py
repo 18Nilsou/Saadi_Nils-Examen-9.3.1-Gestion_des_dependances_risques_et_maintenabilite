@@ -17,6 +17,14 @@ from .domain.models import DayOfWeek, Weather
 
 _log = logging.getLogger("reveil_musical")
 
+# Codes de sortie lus par l'ordonnanceur.
+SENT, NOT_DELIVERED, UNKNOWN_USER = 0, 1, 2
+_SEVERITY = (SENT, UNKNOWN_USER, NOT_DELIVERED)  # du moins grave au plus grave
+
+
+def _worst(a: int, b: int) -> int:
+    return max(a, b, key=_SEVERITY.index)
+
 
 def jour(text: str) -> DayOfWeek:
     return DayOfWeek(text.strip().upper())
@@ -27,36 +35,45 @@ def meteo(text: str) -> Weather:
 
 
 def _wake(container: Container, user_id: str, day: DayOfWeek, weather: Weather) -> int:
-    """Un réveil. Codes de sortie : 0 envoyé, 2 utilisateur inconnu, 1 panne non rattrapable
-    (ex. service utilisateurs injoignable) : tracée en CRITICAL pour que l'ordonnanceur alerte."""
+    """Un réveil. Une panne non rattrapable (ex. service utilisateurs injoignable) est tracée
+    en CRITICAL pour que l'ordonnanceur alerte."""
     try:
         result = container.wake_up_use_case().execute(user_id, day, weather)
     except UnknownUser:
         _log.error("utilisateur inconnu : %s", user_id)
-        return 2
+        return UNKNOWN_USER
     except Exception:
         _log.critical("RÉVEIL NON LIVRÉ pour %s (%s, %s)", user_id, day, weather, exc_info=True)
-        return 1
+        return NOT_DELIVERED
     print(
         f"Réveil envoyé via {result.channel} : {result.track.title} — {result.track.artist} "
         f"(source={result.track.source}, dégradé={result.degraded})"
     )
-    return 0
+    return SENT
 
 
 def _wake_batch(container: Container, path: str) -> int:
-    """Une ligne en erreur est tracée et n'empêche jamais les réveils suivants."""
-    status = 0
-    with open(path, newline="", encoding="utf-8") as f:
-        for number, row in enumerate(csv.reader(f), start=1):
-            if not row or row[0].lstrip().startswith("#"):
-                continue
-            try:
-                user_id, day, weather = row
-                status = max(status, _wake(container, user_id.strip(), jour(day), meteo(weather)))
-            except ValueError as e:
-                _log.error("ligne %d ignorée (%s) : %s", number, ",".join(row), e)
-                status = max(status, 1)
+    """Une ligne en erreur est tracée et n'empêche jamais les réveils suivants.
+    Le code de sortie est celui du problème le plus grave rencontré."""
+    status, wake_ups = SENT, 0
+    try:
+        with open(path, newline="", encoding="utf-8") as f:
+            for number, row in enumerate(csv.reader(f), start=1):
+                if not row or row[0].lstrip().startswith("#"):
+                    continue
+                wake_ups += 1
+                try:
+                    user_id, day, weather = row
+                    status = _worst(status, _wake(container, user_id.strip(), jour(day), meteo(weather)))
+                except ValueError as e:
+                    _log.error("ligne %d ignorée (%s) : %s", number, ",".join(row), e)
+                    status = NOT_DELIVERED
+    except (OSError, UnicodeDecodeError) as e:
+        _log.critical("fichier de lot illisible %s : %s", path, e)
+        return NOT_DELIVERED
+    if not wake_ups:  # une tournée vide est suspecte : l'ordonnanceur doit le savoir
+        _log.error("aucun réveil dans le lot %s", path)
+        return NOT_DELIVERED
     return status
 
 
@@ -71,7 +88,12 @@ def main(argv: list[str] | None = None, container: Container | None = None) -> i
         parser.error("donnez <userId> <JOUR> <METEO>, ou --batch FICHIER.csv")
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    container = container or create_container()
+    if container is None:
+        try:
+            container = create_container()
+        except ValueError as e:
+            _log.critical("configuration invalide : %s", e)
+            return NOT_DELIVERED
     if args.batch:
         return _wake_batch(container, args.batch)
     return _wake(container, args.user_id, args.day, args.weather)

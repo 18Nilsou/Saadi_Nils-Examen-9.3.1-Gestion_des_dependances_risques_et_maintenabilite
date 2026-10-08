@@ -92,3 +92,13 @@ def test_a_dead_provider_is_no_longer_called_once_its_circuit_is_open(container)
         assert use_case.execute("u1", DayOfWeek.LUNDI, Weather.SOLEIL).track.source == "local"
 
     assert sum("itunes" in call["url"] for call in http.calls) == 3
+
+
+def test_an_empty_provider_list_is_a_configuration_error():
+    with pytest.raises(ValueError, match="au moins un"):
+        create_container({"REVEIL_MUSIC_PROVIDERS": " , "})
+
+
+def test_an_invalid_value_names_the_faulty_variable():
+    with pytest.raises(ValueError, match="REVEIL_HTTP_TIMEOUT"):
+        create_container({"REVEIL_HTTP_TIMEOUT": "abc"})
