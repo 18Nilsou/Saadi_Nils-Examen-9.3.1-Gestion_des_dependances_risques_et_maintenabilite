@@ -25,7 +25,7 @@ scripts/audit.sh                      # licences, vulnérabilités, fraîcheur, 
 | Changer **vite** de fournisseur musical | Port `MusicProvider` + un **Adapter** par source. Choix et ordre des sources par la variable **`REVEIL_MUSIC_PROVIDERS`**, sans toucher au code. |
 | Plusieurs **canaux** de notification, d'autres à venir | Port `NotificationSender` + un **Adapter** par SDK (3 faux SDK aux signatures différentes). `NotificationDispatcher` (**Strategy**) choisit selon le profil. |
 | **Aucune** dépendance sans contrôle licence / fraîcheur | Une seule dépendance runtime. **`scripts/audit.sh`** rend le contrôle rejouable et bloquant. SBOM CycloneDX (`sbom.cdx.json`) + tableau complet (§5). Versions épinglées. |
-| **Jamais** de silence | Musique : **cache → coupe-circuit → quota** devant chaque source, puis **chaîne de repli** iTunes → MusicBrainz → liste locale. Canal : préféré → autres canaux de l'utilisateur → log de dernier recours, **quelle que soit l'exception** du canal. Panne non rattrapable → log `CRITICAL` + code de sortie ≠ 0. |
+| **Jamais** de silence | Musique : **cache → coupe-circuit → quota** devant chaque source, puis **chaîne de repli** iTunes → MusicBrainz → liste locale, **quelle que soit l'exception** d'une source (bug d'adapter compris). Canal : préféré → autres canaux de l'utilisateur → log de dernier recours, **quelle que soit l'exception** du canal. Panne non rattrapable → log `CRITICAL` + code de sortie ≠ 0. |
 | Morceau selon le **jour** et la **météo** | Le service utilisateur fournit un morceau par météo + un morceau de secours. Le profil accepte en plus une **surcharge facultative (jour, météo)** : (jour, météo) → météo → secours. |
 
 ## 2. Architecture
@@ -45,6 +45,33 @@ scripts/audit.sh                      # licences, vulnérabilités, fraîcheur, 
                users/ in_memory (mock du service interne)   http.py (urllib)   clock.py
 ```
 
+### Graphe de dépendances (J1 : « de la liste au graphe »)
+
+Graphe tiré des imports réels du code (analyse `ast`) : on y lit le couplage, l'absence de cycle et les points d'entrée des dépendances externes.
+
+```mermaid
+flowchart LR
+    main["__main__<br/>(CLI)"] --> container
+    main --> domain
+    container["container.py<br/>composition root"] --> application
+    container --> domain
+    container --> infra_music & infra_notif & infra_users & infra_http & infra_clock
+    application["application/<br/>use case, chaîne, dispatcher"] --> domain
+    infra_music["infrastructure/music<br/>itunes · musicbrainz · local · guards"] --> domain
+    infra_music --> infra_http
+    infra_notif["infrastructure/notifications"] --> domain
+    infra_users["infrastructure/users"] --> domain
+    infra_http["infrastructure/http.py"] --> domain
+    infra_clock["infrastructure/clock.py"]
+    domain(["domain/<br/>stdlib pure, 0 dépendance"])
+    container -.-> DI[["dependency-injector<br/>(seul package runtime)"]]
+    infra_http -.-> APIs[("iTunes Search API<br/>MusicBrainz API")]
+```
+
+- **Aucun cycle** ; toutes les flèches internes convergent vers `domain/`, qui ne dépend de rien.
+- **Fan-in** maximal : `domain/`, dont dépendent 7 des 8 autres groupes de modules. C'est la partie la plus stable, celle qu'il faut changer le moins.
+- **Une seule** entrée vers le réseau (`infrastructure/http.py`) et **une seule** vers un package externe (`container.py`) : chacune est remplaçable en un point.
+
 Les dépendances vont toujours vers le domaine. Règles vérifiées à chaque exécution des tests (`tests/architecture/test_layers.py`) :
 - `domain/` n'importe que `collections`, `dataclasses`, `enum`, `typing` ;
 - `application/` n'importe ni `infrastructure`, ni le conteneur, ni un module réseau/JSON ;
@@ -62,13 +89,18 @@ Les dépendances vont toujours vers le domaine. Règles vérifiées à chaque ex
 | Chain of Responsibility | `MusicFallbackChain` | repli ordonné entre fournisseurs |
 | Decorator | `music/guards.py` | cache, coupe-circuit et quota ajoutés sans toucher aux adapters |
 
+**Patterns volontairement écartés** (J2 : « un pattern n'est pas un objectif en soi ») :
+- **Facade** : son rôle (offrir une seule méthode au-dessus de plusieurs dépendances techniques) est déjà tenu par `WakeUpUseCase.execute`, qui orchestre utilisateurs, musique et notification derrière un seul appel. Une facade de plus serait une couche vide.
+- **Factory** : la création complexe est centralisée par le conteneur IoC (« IoC <> Factory, mais injecté dans la DI »). Une factory maison dupliquerait `container.py`.
+
 ### Résilience
 
 ```
-morceau :  [cache → coupe-circuit → quota → iTunes] ──(panne / circuit ouvert / quota / rien trouvé)──►
+morceau :  [cache → coupe-circuit → quota → iTunes] ──(panne / circuit ouvert / quota / rien trouvé / bug)──►
            [cache → coupe-circuit → quota → MusicBrainz] ──► liste locale (renvoie toujours un morceau)
 canal   :  canal préféré ──(n'importe quelle exception)──► autres canaux de l'utilisateur ──► LogNotificationSender
 ```
+- **Sources nommées** (`itunes`, `musicbrainz`, `local`) : le journal dit quelle source est en panne (`fournisseur itunes indisponible : circuit ouvert`). Un bug d'adapter est tracé avec sa trace complète, puis la chaîne passe à la source suivante.
 - **Quota** (iTunes 20 req/min, MusicBrainz 1 req/s) : dépassé → `ProviderUnavailable` immédiat, on **bascule au lieu d'attendre**.
 - **Coupe-circuit** (J1 : SPOF) : après 3 échecs consécutifs, la source n'est plus appelée pendant 60 s, donc on n'attend plus le timeout réseau (3 s) à chaque réveil. Ensuite, un seul appel d'essai : succès → fermé, échec → ré-ouvert.
 - **Cache** placé devant : une requête connue ne consomme ni quota ni appel réseau. Les « non trouvé » sont mis en cache, les pannes non.
@@ -96,7 +128,7 @@ canal   :  canal préféré ──(n'importe quelle exception)──► autres c
 
 ### Configuration (dépendances implicites, rendues explicites et documentées)
 
-Toute valeur invalide arrête le programme **au démarrage**, en nommant la variable fautive (ex. `REVEIL_HTTP_TIMEOUT : valeur invalide 'abc'`).
+Toute valeur invalide arrête le programme **au démarrage**, en nommant la variable fautive (ex. `REVEIL_HTTP_TIMEOUT : valeur invalide 'abc'`). Les durées (`REVEIL_HTTP_TIMEOUT`, `REVEIL_CACHE_TTL`) doivent être **finies et strictement positives**, car un timeout à `0`, négatif ou `nan` ferait échouer toutes les sources en silence.
 
 | Variable | Défaut | Rôle |
 |---|---|---|
@@ -124,7 +156,7 @@ REVEIL_ITUNES_URL=http://127.0.0.1:9 REVEIL_MUSICBRAINZ_URL=http://127.0.0.1:9 \
 
 | Dossier | Ce qui est garanti |
 |---|---|
-| `tests/unit/` | règles du domaine (surcharge jour, secours, invariant `Track`) ; use case avec fakes (nominal, panne musique → local, panne canal → autre canal, panne totale → dernier recours) ; cache, quota, coupe-circuit, chaîne de repli, concurrence ; dispatcher (y compris exception imprévue d'un SDK) ; adapters de notification (signatures hétérogènes, SMS ≤ 160 car., contacts masqués) ; conteneur (sélection par config, coupe-circuit câblé, durées de vie, dépendance captive, singletons thread-safe) ; CLI (codes de sortie, lot, casse) |
+| `tests/unit/` | règles du domaine (surcharge jour, secours, invariant `Track`) ; use case avec fakes (nominal, panne musique → local, panne canal → autre canal, panne totale → dernier recours) ; cache, quota, coupe-circuit, chaîne de repli (y compris bug imprévu d'un adapter, sources nommées dans le journal), concurrence ; dispatcher (y compris exception imprévue d'un SDK) ; adapters de notification (signatures hétérogènes, SMS ≤ 160 car., contacts masqués) ; conteneur (sélection par config, durées validées, coupe-circuit câblé, durées de vie, dépendance captive, singletons thread-safe) ; CLI (codes de sortie, lot, casse) |
 | `tests/contract/` | **contrats par abstraction** : la même suite pour les 6 implémentations de `MusicProvider` et les 4 de `NotificationSender`. Elle est vérifiée par mutation : un adapter qui renvoie le JSON brut fait échouer le contrat. S'y ajoutent les adapters iTunes / MusicBrainz contre des **réponses réelles enregistrées** (`tests/fixtures/`), et `JsonHttpClient` contre un serveur HTTP **local** (200, 500, HTML, timeout, hôte injoignable). |
 | `tests/architecture/` | règles de couches et « pas de `new` » (§2) |
 | `tests/e2e/` | vraies API iTunes et MusicBrainz, et CLI complète. Marqueur `e2e`, exclu par défaut. |
@@ -145,6 +177,17 @@ Seams utilisés : les ports du domaine ; `JsonHttpClient` (remplacé par `FakeHt
 | Variables `REVEIL_*` | — | — | **implicite** → documentées (§2) et testées | faible | total |
 | Horloge système | — | — | **implicite** → port `Clock` injecté | faible | total |
 | Accès réseau sortant (DNS, TLS) | externe | transitive | implicite | — | aucun, compensé par la chaîne de repli |
+
+### Dépendances critiques (J1 : fréquence · rôle métier · contrôle)
+
+| Dépendance | Fréquence (qui l'utilise) | Rôle métier | Contrôle | Criticité | Traitement |
+|---|---|---|---|---|---|
+| iTunes Search API | chaque réveil (source n°1) | trouver le morceau | **nul** (Apple, sans SLA) | 🔴 haute | Adapter, cache, coupe-circuit, quota, repli, retrait par config |
+| MusicBrainz API | réveils où iTunes échoue | trouver le morceau (secours) | **nul** (MetaBrainz) | 🟠 moyenne | Adapter, cache, coupe-circuit, quota, repli local |
+| Service utilisateurs | chaque réveil | profil, morceaux, canal : **indispensable** | interne | 🔴 haute | port `UserPreferencesRepository` ; panne → `CRITICAL` + code 1 pour alerter |
+| SDK email / SMS / push | chaque réveil (1 canal) | prévenir l'utilisateur | nul en réel (fournisseurs tiers) | 🟠 moyenne | Adapter par SDK, repli sur les autres canaux puis log |
+| `dependency-injector` | 1 fichier (`container.py`) | aucun (câblage) | open source, 1 mainteneur | 🟢 faible | confiné ; remplaçable par une composition root manuelle |
+| Bibliothèque standard Python | `http.py`, `guards.py`, CLI | transport, verrous | élevé (CPython) | 🟢 faible | version supportée (3.13) |
 
 **SPOF neutralisés** : chaque fournisseur musical et chaque canal est derrière une interface, doublé, protégé par un coupe-circuit pour la musique, et le dernier maillon (liste locale, log) ne dépend d'aucun réseau.
 
@@ -222,6 +265,19 @@ Résultat actuel : **aucune licence copyleft forte, aucune vulnérabilité connu
 | `wcwidth` | 0.9.2 | 0.9.2 (à jour) | MIT | dev | transitif ← prettytable |
 
 Tableau généré depuis `pip-licenses --with-system`, `pipdeptree --json` et `pip list --outdated`. Les licences de `dependency-injector` et de `wcwidth` ont été vérifiées dans leur fichier `LICENSE` ou leurs classifiers, car leurs métadonnées sont incomplètes.
+
+### Politique de mise à jour (J2 : SemVer = niveau de risque)
+
+Toutes les versions sont **épinglées exactement** (`==`), dans `pyproject.toml` et `requirements-dev.lock` : rien ne change sans décision. `scripts/audit.sh` signale les nouvelles versions, et chaque montée suit son niveau de risque :
+
+| Montée | Exemple | Risque | Procédure |
+|---|---|---|---|
+| **PATCH** (x.y.**Z**) | 4.49.1 → 4.49.2 | correctifs, pas de rupture | `pytest` + `scripts/audit.sh`, puis merge |
+| **MINOR** (x.**Y**.0) | 4.49 → 4.50 | nouvelles fonctions, rupture « en théorie » nulle | idem + `pytest -m e2e` + relecture du changelog |
+| **MAJOR** (**X**.0.0) | 4.x → 5.0 | rupture d'API probable | audit complet (licence, transitives, changelog), branche dédiée, toutes les suites dont e2e. Pour `dependency-injector`, seul `container.py` est touché. |
+| **0.x** | `nab` 0.0.18 | chaque version peut tout casser | traité comme MAJOR (outillage de dev uniquement) |
+
+Une **correction de sécurité** (CVE remontée par `pip-audit`) passe en priorité, quel que soit son niveau.
 
 ### Points qui demandent une justification
 
