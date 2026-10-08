@@ -2,7 +2,7 @@ import pytest
 from dependency_injector import providers
 from fakes import FakeHttp, load_fixture
 
-from reveil_musical.container import Container, create_container
+from reveil_musical.container import DEFAULTS, Container, create_container
 from reveil_musical.domain.models import Channel, DayOfWeek, Weather
 
 
@@ -34,10 +34,21 @@ def test_stateful_components_are_singletons_and_use_case_is_transient(container)
 
 
 def test_no_captive_dependency_singletons_only_depend_on_singletons_or_config():
-    allowed = (providers.Singleton, providers.Configuration, providers.ConfigurationOption, providers.Object)
-    for singleton in Container().traverse(types=[providers.Singleton]):
+    allowed = (providers.BaseSingleton, providers.Configuration, providers.ConfigurationOption, providers.Object)
+    for singleton in Container().traverse(types=[providers.BaseSingleton]):
         for dep in singleton.related:
             assert isinstance(dep, allowed), f"{singleton} capture {dep}"
+
+
+def test_every_singleton_is_thread_safe():
+    """providers.Singleton n'est pas thread-safe : deux réveils simultanés pourraient créer deux quotas."""
+    singletons = list(Container().traverse(types=[providers.BaseSingleton]))
+    assert singletons and all(isinstance(s, providers.ThreadSafeSingleton) for s in singletons)
+
+
+def test_default_user_agent_identifies_the_app_without_personal_data():
+    ua = DEFAULTS["musicbrainz_user_agent"]
+    assert ua.startswith("ReveilMusical/") and "github.com" in ua and "@" not in ua
 
 
 def test_env_variables_override_defaults():

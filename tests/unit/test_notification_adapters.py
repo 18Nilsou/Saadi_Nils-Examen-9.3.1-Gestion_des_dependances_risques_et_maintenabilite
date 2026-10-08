@@ -80,3 +80,14 @@ def test_fake_sdks_write_to_the_log(caplog):
     LogNotificationSender().send("u1", MESSAGE)
     assert [r.name.split(".")[-1] for r in caplog.records] == ["email", "sms", "push", "fallback"]
     assert all("Bon lundi" in r.getMessage() for r in caplog.records)
+
+
+def test_fake_sdks_never_log_contacts_in_clear(caplog):
+    caplog.set_level(logging.INFO)
+    EmailClient().send_mail("alice@example.com", "s", "b")
+    SmsGateway().dispatch("+33600000001", "t")
+    PushNotifier().notify("device-token-u3", "t", {})
+
+    assert "alice@" not in caplog.text and "al***@example.com" in caplog.text
+    assert "+33600000001" not in caplog.text and "+336******01" in caplog.text
+    assert "device-token-u3" not in caplog.text and "devi***" in caplog.text

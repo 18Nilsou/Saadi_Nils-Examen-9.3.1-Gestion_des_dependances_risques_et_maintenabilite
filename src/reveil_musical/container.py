@@ -3,7 +3,8 @@ Choisir/réordonner les sources musicales = variable REVEIL_MUSIC_PROVIDERS, san
 Ajouter une nouvelle source ou un nouveau canal = un adapter + une ligne ici, rien d'autre.
 
 Durées de vie :
-- Singleton : composants sans état par réveil, ou dont l'état DOIT être partagé
+- Singleton (ThreadSafeSingleton : providers.Singleton ne l'est pas, et deux réveils
+  simultanés ne doivent pas créer deux quotas) : composants sans état par réveil, ou dont l'état DOIT être partagé
   (cache, compteur de quota). Ils ne dépendent que d'autres singletons ou de la config
   -> pas de dépendance captive (vérifié par test).
 - Factory (transient) : orchestrations applicatives, légères et sans état.
@@ -42,7 +43,7 @@ DEFAULTS = {
     "itunes_url": "https://itunes.apple.com",
     "music_providers": "itunes,musicbrainz",
     "musicbrainz_url": "https://musicbrainz.org",
-    "musicbrainz_user_agent": "ReveilMusical/0.1 (nils.saadi@gmail.com)",
+    "musicbrainz_user_agent": "ReveilMusical/0.1 ( https://github.com/18Nilsou/Saadi_Nils-Examen-9.3.1-Gestion_des_dependances_risques_et_maintenabilite )",
     "http_timeout": 3.0,
     "cache_ttl": 86400.0,
 }
@@ -60,17 +61,17 @@ def _ordered_providers(order: str, remote: Mapping, local) -> list:
 class Container(containers.DeclarativeContainer):
     config = providers.Configuration()
 
-    clock = providers.Singleton(SystemClock)
-    http = providers.Singleton(JsonHttpClient, timeout=config.http_timeout)
+    clock = providers.ThreadSafeSingleton(SystemClock)
+    http = providers.ThreadSafeSingleton(JsonHttpClient, timeout=config.http_timeout)
 
     # --- Musique : cache -> coupe-circuit -> quota -> adapter, pour chaque fournisseur distant ---
-    itunes = providers.Singleton(
+    itunes = providers.ThreadSafeSingleton(
         CachingMusicProvider,
-        inner=providers.Singleton(
+        inner=providers.ThreadSafeSingleton(
             CircuitBreakerMusicProvider,
-            inner=providers.Singleton(
+            inner=providers.ThreadSafeSingleton(
                 RateLimitedMusicProvider,
-                inner=providers.Singleton(ITunesMusicProvider, http=http, base_url=config.itunes_url),
+                inner=providers.ThreadSafeSingleton(ITunesMusicProvider, http=http, base_url=config.itunes_url),
                 clock=clock,
                 max_calls=20,
                 window_seconds=60,
@@ -82,13 +83,13 @@ class Container(containers.DeclarativeContainer):
         clock=clock,
         ttl_seconds=config.cache_ttl,
     )
-    musicbrainz = providers.Singleton(
+    musicbrainz = providers.ThreadSafeSingleton(
         CachingMusicProvider,
-        inner=providers.Singleton(
+        inner=providers.ThreadSafeSingleton(
             CircuitBreakerMusicProvider,
-            inner=providers.Singleton(
+            inner=providers.ThreadSafeSingleton(
                 RateLimitedMusicProvider,
-                inner=providers.Singleton(
+                inner=providers.ThreadSafeSingleton(
                     MusicBrainzMusicProvider,
                     http=http,
                     base_url=config.musicbrainz_url,
@@ -105,7 +106,7 @@ class Container(containers.DeclarativeContainer):
         clock=clock,
         ttl_seconds=config.cache_ttl,
     )
-    local_music = providers.Singleton(LocalFallbackMusicProvider, tracks=providers.Object(DEFAULT_TRACKS))
+    local_music = providers.ThreadSafeSingleton(LocalFallbackMusicProvider, tracks=providers.Object(DEFAULT_TRACKS))
 
     # Sources distantes interchangeables : leur ordre vient de REVEIL_MUSIC_PROVIDERS.
     remote_music = providers.Dict(itunes=itunes, musicbrainz=musicbrainz)
@@ -115,10 +116,10 @@ class Container(containers.DeclarativeContainer):
     )
 
     # --- Notifications : un faux SDK + son adapter par canal ---
-    email = providers.Singleton(EmailNotificationAdapter, client=providers.Singleton(EmailClient))
-    sms = providers.Singleton(SmsNotificationAdapter, gateway=providers.Singleton(SmsGateway))
-    push = providers.Singleton(PushNotificationAdapter, notifier=providers.Singleton(PushNotifier))
-    last_resort = providers.Singleton(LogNotificationSender)
+    email = providers.ThreadSafeSingleton(EmailNotificationAdapter, client=providers.ThreadSafeSingleton(EmailClient))
+    sms = providers.ThreadSafeSingleton(SmsNotificationAdapter, gateway=providers.ThreadSafeSingleton(SmsGateway))
+    push = providers.ThreadSafeSingleton(PushNotificationAdapter, notifier=providers.ThreadSafeSingleton(PushNotifier))
+    last_resort = providers.ThreadSafeSingleton(LogNotificationSender)
 
     notifier = providers.Factory(
         NotificationDispatcher,
@@ -127,7 +128,7 @@ class Container(containers.DeclarativeContainer):
     )
 
     # --- Utilisateurs (mock du service interne) ---
-    users = providers.Singleton(InMemoryUserPreferencesRepository, profiles=providers.Object(DEMO_PROFILES))
+    users = providers.ThreadSafeSingleton(InMemoryUserPreferencesRepository, profiles=providers.Object(DEMO_PROFILES))
 
     wake_up_use_case = providers.Factory(WakeUpUseCase, users=users, music=music_chain, notifier=notifier)
 

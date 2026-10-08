@@ -1,5 +1,7 @@
-"""Décorateurs de MusicProvider : cache et limitation de débit (iTunes ~20 req/min,
-MusicBrainz 1 req/s). Ils portent un état partagé : à enregistrer en Singleton."""
+"""Décorateurs de MusicProvider : cache, coupe-circuit et limitation de débit (iTunes ~20 req/min,
+MusicBrainz 1 req/s). Ils portent un état partagé entre réveils : à enregistrer en singleton
+thread-safe. Chaque verrou ne protège que l'état, jamais l'appel réseau (pas de sérialisation)."""
+import threading
 from collections import deque
 
 from reveil_musical.domain.errors import ProviderUnavailable
@@ -17,14 +19,16 @@ class RateLimitedMusicProvider:
         self._max_calls = max_calls
         self._window = window_seconds
         self._calls: deque[float] = deque()
+        self._lock = threading.Lock()
 
     def find_track(self, query: str) -> Track | None:
-        now = self._clock.now()
-        while self._calls and self._calls[0] <= now - self._window:
-            self._calls.popleft()
-        if len(self._calls) >= self._max_calls:
-            raise ProviderUnavailable("quota de requêtes atteint")
-        self._calls.append(now)
+        with self._lock:  # vérifier puis réserver doit être atomique
+            now = self._clock.now()
+            while self._calls and self._calls[0] <= now - self._window:
+                self._calls.popleft()
+            if len(self._calls) >= self._max_calls:
+                raise ProviderUnavailable("quota de requêtes atteint")
+            self._calls.append(now)
         return self._inner.find_track(query)
 
 
@@ -37,22 +41,26 @@ class CachingMusicProvider:
         self._clock = clock
         self._ttl = ttl_seconds
         self._entries: dict[str, tuple[float, Track | None]] = {}
+        self._lock = threading.Lock()
 
     def find_track(self, query: str) -> Track | None:
         key = query.strip().casefold()
-        now = self._clock.now()
-        hit = self._entries.get(key)
+        with self._lock:
+            now = self._clock.now()
+            hit = self._entries.get(key)
         if hit and hit[0] > now:
             return hit[1]
         track = self._inner.find_track(query)
-        self._entries[key] = (now + self._ttl, track)
+        with self._lock:
+            self._entries[key] = (now + self._ttl, track)
         return track
 
 
 class CircuitBreakerMusicProvider:
     """Coupe-circuit (J1 : SPOF). Après `failure_threshold` échecs consécutifs, le circuit
     s'ouvre : ProviderUnavailable immédiat, sans appel réseau, donc sans attendre un timeout
-    à chaque réveil. Après `reset_seconds`, un appel d'essai : succès -> fermé, échec -> ré-ouvert."""
+    à chaque réveil. Après `reset_seconds`, un seul appel d'essai (semi-ouvert) :
+    succès -> fermé, échec -> ré-ouvert."""
 
     def __init__(self, inner: MusicProvider, clock: Clock, failure_threshold: int, reset_seconds: float):
         self._inner = inner
@@ -61,18 +69,24 @@ class CircuitBreakerMusicProvider:
         self._reset = reset_seconds
         self._failures = 0
         self._opened_at: float | None = None
+        self._lock = threading.Lock()
 
     def find_track(self, query: str) -> Track | None:
-        if self._opened_at is not None:
-            if self._clock.now() - self._opened_at < self._reset:
-                raise ProviderUnavailable("circuit ouvert")
-            self._failures = self._threshold - 1  # semi-ouvert : un seul essai
+        with self._lock:
+            if self._opened_at is not None:
+                now = self._clock.now()
+                if now - self._opened_at < self._reset:
+                    raise ProviderUnavailable("circuit ouvert")
+                # semi-ouvert : ce thread fait l'essai, le circuit reste ouvert pour les autres
+                self._opened_at, self._failures = now, self._threshold - 1
         try:
             track = self._inner.find_track(query)
         except ProviderUnavailable:
-            self._failures += 1
-            if self._failures >= self._threshold:
-                self._opened_at = self._clock.now()
+            with self._lock:
+                self._failures += 1
+                if self._failures >= self._threshold:
+                    self._opened_at = self._clock.now()
             raise
-        self._failures, self._opened_at = 0, None
+        with self._lock:
+            self._failures, self._opened_at = 0, None
         return track

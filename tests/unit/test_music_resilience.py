@@ -1,3 +1,6 @@
+import threading
+import time
+
 import pytest
 from fakes import FakeClock
 
@@ -182,3 +185,35 @@ def test_a_failed_trial_call_reopens_the_circuit():
     fail_n_times(cb, 3)
 
     assert inner.calls == 4
+
+
+# --- Concurrence : plusieurs réveils au même instant ---
+
+class SlowLimit(int):
+    """Quota dont la comparaison cède la main : ouvre la fenêtre de course entre
+    « vérifier le quota » et « enregistrer l'appel », comme le ferait un vrai ordonnanceur."""
+
+    def __le__(self, other):  # appelé pour `len(calls) >= limit`
+        time.sleep(0.001)
+        return int.__le__(self, other)
+
+
+def test_quota_holds_under_concurrent_wake_ups():
+    inner = CountingProvider()
+    limited = RateLimitedMusicProvider(inner, FakeClock(), max_calls=SlowLimit(20), window_seconds=60)
+    barrier = threading.Barrier(50)
+
+    def wake():
+        barrier.wait()
+        try:
+            limited.find_track("q")
+        except ProviderUnavailable:
+            pass
+
+    threads = [threading.Thread(target=wake) for _ in range(50)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert inner.calls == 20
